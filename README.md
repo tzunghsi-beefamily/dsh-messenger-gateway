@@ -123,7 +123,7 @@ and keep working on it from Telegram:
 
 | Command | What it does |
 |---------|--------------|
-| `/sessions [n]` | List the n most recent sessions with their ids (Telegram and GUI ones) |
+| `/sessions [n] [all]` | List the n most recent sessions with their ids (Telegram and GUI ones) |
 | `/attach <n\|id\|title>` | Continue that session here; this chat's default session is remembered |
 | `/detach` (aliases `/back`, `/default`) | Leave the attached session and go back to the default one |
 | `/new` | Forget both: the next message starts a brand-new default session |
@@ -131,6 +131,10 @@ and keep working on it from Telegram:
 `/status` shows `mode: default` or `mode: attached → <session id>`. In the binding file a chat is stored as
 `{"defaultSessionId": "msgw-…", "attachedSessionId": "session-…"}` (v1 files that stored a bare id are migrated
 automatically).
+
+**Subagent sessions are hidden.** When an agent spawns subagents, their sessions are stored too
+(`delegationDepth > 0`) but they are activity of a parent session, so `/sessions`, `npm run sessions` and
+`/attach` skip them. `/sessions all` (or `--all`) shows them; `/attach` refuses to continue one.
 
 ## 🩺 Health check & tests
 

@@ -122,13 +122,17 @@ graph LR
 
 | 指令 | 作用 |
 |------|------|
-| `/sessions [n]` | 列出最近 n 條 session 與它們的 id(含 Telegram 與 GUI 的) |
+| `/sessions [n] [all]` | 列出最近 n 條 session 與它們的 id(含 Telegram 與 GUI 的) |
 | `/attach <編號\|id 前幾碼\|標題片段>` | 接續該 session;這個話題的預設 session 會被保留 |
 | `/detach`(別名 `/back`、`/default`) | 退出接續的 session,回到預設 session |
 | `/new` | 兩者都清掉:下一則訊息建立全新的預設 session |
 
 `/status` 會顯示 `mode: default` 或 `mode: attached → <session id>`。綁定檔格式是
 `{"defaultSessionId": "msgw-…", "attachedSessionId": "session-…"}`(舊版只存一個 id 的檔案會自動遷移)。
+
+**子 agent 的 session 預設會被隱藏。** agent 開子 agent 時,那些 session 也會被存下來(`delegationDepth > 0`),
+但它們只是上層 session 的活動,所以 `/sessions`、`npm run sessions`、`/attach` 預設都會跳過;要看請用
+`/sessions all`(或 `--all`),而 `/attach` 會拒絕接續子 agent 的 session。
 
 ## 🩺 健康檢查與測試
 

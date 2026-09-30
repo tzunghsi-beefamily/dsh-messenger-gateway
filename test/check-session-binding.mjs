@@ -8,6 +8,7 @@ import assert from 'node:assert/strict'
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { zstdCompressSync } from 'node:zlib'
 import { createChatSessionStore } from '../lib/workspace-store.js'
 import { findStoredSession, listStoredSessions } from '../lib/session-index.js'
 
@@ -64,24 +65,41 @@ ok('remove 清掉整個聊天綁定', migrated.effective('-100:1') === undefined
 
 /* session index ----------------------------------------------------------- */
 const fakeHome = join(tmp, 'dshhome')
-mkdirSync(join(fakeHome, 'sessions', '--slug--', 'msgw-aaa'), { recursive: true })
-mkdirSync(join(fakeHome, 'sessions', '--slug--', 'session-bbb'), { recursive: true })
 mkdirSync(join(fakeHome, 'storages', 'session_projcache', 'sessions'), { recursive: true })
-const cache = (id, title, cwd) => writeFileSync(
+const cache = (id, title) => writeFileSync(
   join(fakeHome, 'storages', 'session_projcache', 'sessions', `${id}.json`),
-  JSON.stringify({ record: { identity: { cwd }, rows: { title: { val: title } } } }),
+  JSON.stringify({ record: { rows: { title: { val: title } } } }),
   'utf8',
 )
-cache('msgw-aaa', '我的測試對話', 'C:\\ws')
-cache('session-bbb', 'GUI 任務', 'C:\\ws2')
+/** A real session log: one zstd frame with the header, plus a second frame. */
+const writeLog = (id, { cwd, delegationDepth }) => {
+  const dir = join(fakeHome, 'sessions', '--slug--', id)
+  mkdirSync(dir, { recursive: true })
+  const header = Buffer.from(`${JSON.stringify({ type: 'session', version: 4, id, createdAt: Date.now(), cwd, isSeeded: false, delegationDepth })}\n`, 'utf8')
+  const body = Buffer.from(`${JSON.stringify({ type: 'turn/start', seq: 4, data: { turn: 1 } })}\n`, 'utf8')
+  writeFileSync(join(dir, 'session.v4.jsonl.zstd'), Buffer.concat([zstdCompressSync(header), zstdCompressSync(body)]))
+}
+
+writeLog('msgw-aaa', { cwd: 'C:\\ws', delegationDepth: 0 })
+writeLog('session-bbb', { cwd: 'C:\\ws2', delegationDepth: 0 })
+writeLog('sub-ccc', { cwd: 'C:\\ws2', delegationDepth: 1 })
+cache('msgw-aaa', '我的測試對話')
+cache('session-bbb', 'GUI 任務')
+cache('sub-ccc', '子 agent 任務')
 
 const list = listStoredSessions({ home: fakeHome })
-ok('索引列出 2 個 session', list.length === 2)
-ok('索引讀到標題與目錄', list.some((s) => s.id === 'msgw-aaa' && s.title === '我的測試對話' && s.cwd === 'C:\\ws'))
+ok('索引列出 2 個 session(子 agent 隱藏)', list.length === 2)
+ok('索引讀到標題(cache)與目錄(log header)', list.some((s) => s.id === 'msgw-aaa' && s.title === '我的測試對話' && s.cwd === 'C:\\ws'))
 ok('Telegram 標記正確', list.find((s) => s.id === 'msgw-aaa').telegram === true && list.find((s) => s.id === 'session-bbb').telegram === false)
+const withAll = listStoredSessions({ home: fakeHome, includeSubagents: true })
+ok('includeSubagents 會列出子 agent', withAll.length === 3 && withAll.find((s) => s.id === 'sub-ccc').subagent === true)
+ok('子 agent 的 depth 是 1', withAll.find((s) => s.id === 'sub-ccc').depth === 1)
+ok('上層 session 的 depth 是 0', withAll.find((s) => s.id === 'session-bbb').depth === 0 && withAll.find((s) => s.id === 'session-bbb').subagent === false)
 ok('可用 id 前幾碼找到', findStoredSession('msgw-a', { home: fakeHome })?.id === 'msgw-aaa')
 ok('可用標題片段找到(不分大小寫)', findStoredSession('gui 任務', { home: fakeHome })?.id === 'session-bbb')
 ok('找不到時回 undefined', findStoredSession('nope-nope', { home: fakeHome }) === undefined)
+ok('預設找不到子 agent', findStoredSession('sub-ccc', { home: fakeHome }) === undefined)
+ok('明確要求才找得到子 agent', findStoredSession('sub-ccc', { home: fakeHome, includeSubagents: true })?.id === 'sub-ccc')
 
 rmSync(tmp, { recursive: true, force: true })
 console.log(`\n${pass} 項通過${process.exitCode ? '(有失敗)' : ''}`)
