@@ -1,0 +1,156 @@
+# dsh-messenger-gateway 本機 fork 維護手冊
+
+> 對象:這台機器上的 **`C:\Users\DavidYeh\Documents\雜七雜八\dsh-messenger-gateway`**
+> 基礎版本:上游 `@goodandready/dsh-messenger-gateway@0.4.9`(MIT)
+> 上游來源:<https://github.com/GooDAnDReaDY/dsh-messenger-gateway>
+> 執行環境:DSH `0.2.0-rc.2` / Node 24 / Windows
+> 最後更新:2026-09-30
+
+---
+
+## 1. 這個 fork 在做什麼
+
+把 **DSH 的工作區(workspace registry)鏡射成 Telegram 論壇話題**,並讓「話題 → 工作區」對應到正確的執行目錄,手機發起的對話可以在 Web GUI 接手。
+
+```
+Telegram 話題 ──(workspace-topics.json)──> DSH 工作區路徑
+      │
+      └──(chat-sessions.json)──> 固定的 DSH session(直到 /new)
+```
+
+### 安裝方式(profile 連結,不是複製)
+
+```
+~/.dsh/profiles/web/package.json
+  dependencies:  "@goodandready/dsh-messenger-gateway": "link:C:/Users/DavidYeh/Documents/雜七雜八/dsh-messenger-gateway"
+  dsh.profile.bundles: [..., "@goodandready/dsh-messenger-gateway"]
+```
+
+* `link:` 是 **Junction**,所以改這裡的程式碼就是改執行中的外掛。
+* 但 **Node module cache 不會重載** → **改完必須重啟 `dsh web`**。
+* 設定寫在 `~/.dsh/profiles/web/cordis.patch.yml`(DSH 標準設定路徑,不是 hack)。
+
+### 狀態檔(`~/.dsh/messenger-gateway/`)
+
+| 檔案 | 內容 | 刪掉會怎樣 |
+|---|---|---|
+| `workspace-topics.json` | `forumChatId` + `工作區 → 話題` 對應 | 下次 `/ws sync` 重建全部話題(會產生孤兒話題) |
+| `chat-sessions.json` | `chatId:threadId → sessionId`(持久綁定) | 每則訊息重新開 session |
+| `events.log` | session 事件軌跡(上限 200 行,`telegram.debugEvents`) | 只是失去診斷資料 |
+
+---
+
+## 2. 症狀 → 根因 → 修法(七個已修問題)
+
+| # | 症狀 | 根因 | 修法(檔案) |
+|---|---|---|---|
+| 1 | GUI 卡片存了卻沒生效、token 遺失 | DSH 0.2.0-rc.2 **只持久化 `.volatile()` 標記的欄位**,未標記的欄位被靜默丟棄 | `lib/config.js`:對 `telegram`/`discord`/`slack`/`media`/`tts`/`agent` 加 `.volatile()` |
+| 2 | 同名話題一直重複建立 | ①建立話題之間沒有節流 ②**Telegram 沒有「列出話題」API**,無法得知同名話題已存在 | `lib/workspace-topics.js`:`createDelayMs`(1.5s)、429 `retry_after` 重試、`errorDetails` 回報、`autoReconcile` 預設 **false**;`/ws probe` 診斷 |
+| 3 | `(no response)`(主要) | **設定一變(volatile 更新)→ `sync()` 重建 Gateway → `stop()` dispose 所有 chat → 進行中的回合被殺**,新 listener 用新的空 `pending` 表 | `lib/index.js`:設定指紋比對,沒實際變更**不重建** |
+| 4 | `(no response)`(次要) | `pending`(回合收集器)是**每個 Gateway 一份** | `lib/gateway.js`:`sharedActiveTurns` 模組層共用 |
+| 5 | GUI 看不到 Telegram 的 session | 外掛用 `ctx.agents.create()` 直接建 session,**繞過 host 的 session controller**(平常由它負責 `attachSession`) | `lib/gateway.js`:`attachSessionToWorkspace()`(建立後 + 每輪 flush 後各試一次) |
+| 6 | 每則訊息都開新 session | 對應只在記憶體(`threadToSession`),重建/閒置回收即失去 | `lib/workspace-store.js`:`createChatSessionStore`;`lib/gateway.js` 建立時一律寫入;只有 `/new` 清除 |
+| 7 | 一次傳多則只有第一則有回答 | 原版 **steer** 設計把後續訊息注入當前回合,而**被注入的回合沒有收集器** → 回答不會送回 Telegram | `lib/gateway.js`:`queueWhileBusy`(預設 **true**)排隊 + `drainQueue()`,每則各自一回合、各自回覆 |
+
+### 編號 3 的診斷證據(值得記住的手法)
+
+```
+events.log 顯示:某一輪「全程 collector=no」
+  → 但 assistant/message、turn/end 都出現了
+  → 表示回合真的跑完,只是收集器看不到事件
+  → 加上 gateway.started/gateway.stopped 日誌後確認:Gateway 在回合中被重建
+```
+
+**關鍵洞察**:同一輪裡 `pending.set` 記錄 `collector=yes`,緊接著同一 session 的事件卻是 `collector=no`
+→ 一定是「**換了一個實例**」而不是「鍵打錯」。
+
+---
+
+## 3. DSH 0.2.0-rc.2 契約重點(踩過的坑)
+
+| 主題 | 事實 |
+|---|---|
+| 建立 / 續用 session | `ctx.agents.create()` **只能建新的**;續用必須 `ctx.agents.resume({ resumeSessionId })`。把既有 id 傳給 `create()` → `session "…" already exists` |
+| session 事件 | `ctx.on('session/event', (session, event) => …)`,事件型別如 `turn/start`、`user/message`、`assistant/message`、`turn/end`;文字在 `event.data.message.content` 的 `{type:'text'}` 區塊 |
+| 回合結束的權威訊號 | **`turn/end` 事件**。`agent.whenIdle()` 可能在回合真正開始前就 resolve(競態) |
+| 設定寫入 | 只有 `.volatile()` 子樹可從 UI 寫入;未標記 → `Config field "X" is not volatile`;secret 讀取會被遮蔽 |
+| 工作區歸屬 | `ctx.workspaceRegistry.list()`(同步)取得 entity,`entity.attachSession(sessionId)` 才會進 GUI 專案 |
+| Patch 分層 | Bundle → profile → home(`~/.dsh/cordis.patch.yml`)→ CLI;**patch 是整段取代,不是深層合併** |
+| 認證 | 外掛建立 session 不等於 GUI 的建立路徑;兩者行為差異要靠自己補 |
+
+---
+
+## 4. 診斷工具箱
+
+```powershell
+# 外掛狀態 / 設定 / 連線測試
+Invoke-WebRequest http://127.0.0.1:3080/dsh-messenger-gateway/status  -UseBasicParsing
+Invoke-WebRequest http://127.0.0.1:3080/dsh-messenger-gateway/config  -UseBasicParsing
+Invoke-WebRequest http://127.0.0.1:3080/dsh-messenger-gateway/smoke -Method POST -UseBasicParsing
+
+# 離線測試(15 項:建/改名/關閉/重開/幂等/持久化/cwd/General/缺目錄/同名/清除/重建)
+node C:\Users\DavidYeh\Documents\雜七雜八\gw-test\check-workspace-topics.mjs
+
+# 讀 DSH session 紀錄(zstd 多 frame,已處理)
+node C:\Users\DavidYeh\Documents\雜七雜八\gw-test\read-session.mjs `
+  "$env:USERPROFILE\.dsh\sessions\<workspace>\<session>\session.v4.jsonl.zstd" 20
+
+# 關鍵狀態檔
+Get-Content "$env:USERPROFILE\.dsh\messenger-gateway\events.log" -Tail 40
+Get-Content "$env:USERPROFILE\.dsh\messenger-gateway\workspace-topics.json" -Raw
+Get-Content "$env:USERPROFILE\.dsh\messenger-gateway\chat-sessions.json"  -Raw
+```
+
+Telegram 指令:`/ws`、`/ws list`、`/ws sync`、`/ws reset`、`/ws probe`、`/new`。
+
+### 判讀口訣
+
+| 現象 | 意思 |
+|---|---|
+| 事件連續 `collector=no` 且發生在回合中 | Gateway 被重建(看 `gateway.stopped`)或鍵不匹配 |
+| `gateway.stopped > 0`(非重啟) | 又有東西在觸發 `sync()` → 檢查 fingerprint 比對是否被繞過 |
+| `assistant/message` 有、Telegram 沒有 | 收集器沒收到 → 對照 `events.log` 的 `collector=` 旗標 |
+| Telegram `(no response)` 但 session 有回答 | 同上;後備路徑 `lastAssistantText()` 也會失效(此版 session 物件沒有 `.messages`) |
+
+---
+
+## 5. 維護流程
+
+### A. 改完程式碼
+
+1. `node --check lib/*.js`
+2. `node gw-test/check-workspace-topics.mjs`(15/15)
+3. **重啟 `dsh web`**(Ctrl+C → `npx @deepseek-ai/dsh web`)
+4. 在 Telegram 傳一則測試,檢查 `events.log`
+
+### B. 上游釋出新版時(重要)
+
+**不要**用 `dsh plugin update` —— 會蓋掉這個 fork。流程是:
+
+```powershell
+# 1) 抓上游新版原始碼到暫存目錄
+npm install --prefix <tmp> @goodandready/dsh-messenger-gateway@<新版> --cache <workspace>\.npm-cache
+# 2) 與本 fork 比對(排除 node_modules)
+#    套用 patches/local-fixes-vs-0.4.9.patch,逐項解決衝突
+```
+
+`patches/local-fixes-vs-0.4.9.patch` 是「本 fork 相對上游 0.4.9 的完整差異」,新版本可用它快速移植。
+移植後務必重跑 §4 的驗證。
+
+### C. 禁忌
+
+* ❌ 不要改 DSH 本體或 `~/.dsh` 的設定檔來繞問題(重啟就壞) —— 修正一律放這個外掛。
+* ❌ 不要 `dsh plugin update`。
+* ⚠️ `profiles/web/node_modules/@goodandready/` 是 Junction,**不要刪**(刪了外掛消失)。
+
+---
+
+## 6. 已知限制(非 bug)
+
+1. **Telegram 沒有「列出話題」API** → 無法自動偵測孤兒話題;`/ws reset` + `/ws sync` 是重建手段。
+2. **`autoReconcile` 預設關閉** → 在 GUI 新增工作區後,要手動在群組打一次 `/ws sync`。
+3. **同名話題可以存在** → 重建時舊話題不會被刪,需手動整理。
+4. **`queueWhileBusy: true` 與上游行為不同**(上游會把訊息併入當前回合且不回覆)。
+   要回上游行為:`telegram.queueWhileBusy: false`。
+5. **`debugEvents` 預設開啟** → 診斷用,上限 200 行;不需要時設 `telegram.debugEvents: false`。
+6. 後備路徑 `lastAssistantText()` 在 DSH 0.2.0-rc.2 上拿不到 session 訊息(無 `.messages`)→ 主要仍依賴事件收集。
