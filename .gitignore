@@ -1,6 +1,7 @@
-﻿node_modules/
+node_modules/
 *.log
 .DS_Store
 Thumbs.db
 test/fixtures/
+test/fixtures-binding/
 test/store-test.json

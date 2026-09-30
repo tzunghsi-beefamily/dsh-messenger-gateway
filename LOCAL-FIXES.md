@@ -36,7 +36,7 @@ Telegram 話題 ──(workspace-topics.json)──> DSH 工作區路徑
 | 檔案 | 內容 | 刪掉會怎樣 |
 |---|---|---|
 | `workspace-topics.json` | `forumChatId` + `工作區 → 話題` 對應 | 下次 `/ws sync` 重建全部話題(會產生孤兒話題) |
-| `chat-sessions.json` | `chatId:threadId → sessionId`(持久綁定) | 每則訊息重新開 session |
+| `chat-sessions.json` | `chatId:threadId → { defaultSessionId, attachedSessionId }` | 每則訊息重新開 session |
 | `events.log` | session 事件軌跡(上限 200 行,`telegram.debugEvents`) | 只是失去診斷資料 |
 
 ---
@@ -110,7 +110,15 @@ Get-Content "$env:USERPROFILE\.dsh\messenger-gateway\workspace-topics.json" -Raw
 Get-Content "$env:USERPROFILE\.dsh\messenger-gateway\chat-sessions.json"  -Raw
 ```
 
-Telegram 指令:`/ws`、`/ws list`、`/ws sync`、`/ws reset`、`/ws probe`、`/new`。
+Telegram 指令:`/ws`、`/ws list`、`/ws sync`、`/ws reset`、`/ws probe`、`/sessions`、`/attach`、`/detach`、`/new`、`/status`。
+
+### session 模型(預設 / 接續)
+
+* 每個聊天/話題有自己的 **default session**(第一則訊息建立,重啟後接續)
+* `/sessions [n]` 列出最近 session(含 id、標題、來源);`/attach <編號|id 前幾碼|標題片段>` 接續既有 session
+* `/detach`(或 `/back`)退回 default;`/new` 連 default 一起清掉(下一則建立全新的)
+* 接續時**不會**覆蓋 default,也不會把該 session 掛到話題的工作區(它本來就在自己的專案裡)
+* `/status` 可看目前是 `default` 還是 `attached → <id>`
 
 ### 判讀口訣
 

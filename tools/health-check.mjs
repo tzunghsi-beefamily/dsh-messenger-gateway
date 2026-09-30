@@ -43,6 +43,7 @@ const required = [
   'lib/gateway-turn.js',
   'lib/workspace-topics.js',
   'lib/workspace-store.js',
+  'lib/session-index.js',
   'lib/config.js',
   'lib/client.js',
   'test/check-workspace-topics.mjs',
@@ -79,6 +80,8 @@ const fixChecks = [
   ['訊息排隊(queueWhileBusy)', 'lib/gateway.js', /queueWhileBusy/],
   ['session 歸屬專案(attachSession)', 'lib/gateway.js', /attachSessionToWorkspace/],
   ['持久化話題→session', 'lib/workspace-store.js', /createChatSessionStore/],
+  ['預設 + 接續 session 綁定', 'lib/workspace-store.js', /attachedSessionId/],
+  ['session 索引(/sessions /attach)', 'lib/session-index.js', /listStoredSessions/],
   ['話題節流 + 429 重試', 'lib/workspace-topics.js', /parseRetryAfter/],
   ['話題→session 綁定', 'lib/workspace-store.js', /createWorkspaceTopicsStore/],
 ]
@@ -145,16 +148,21 @@ try {
 }
 
 /* 7. offline test suite (inherits stdio so you can see its table) --------- */
-const testFile = join(root, 'test', 'check-workspace-topics.mjs')
-let testCode = -1
-if (existsSync(testFile)) {
-  testCode = await new Promise((resolve) => {
+const testFiles = ['test/check-workspace-topics.mjs', 'test/check-session-binding.mjs']
+  .map((rel) => join(root, rel))
+  .filter((file) => existsSync(file))
+let testCode = 0
+const testRan = []
+for (const testFile of testFiles) {
+  const code = await new Promise((resolve) => {
     const child = spawn(process.execPath, [testFile], { stdio: 'inherit', windowsHide: true })
     child.on('error', () => resolve(-1))
-    child.on('exit', (code) => resolve(code ?? -1))
+    child.on('exit', (value) => resolve(value ?? -1))
   })
+  testRan.push(`${testFile.slice(root.length + 1)}${code === 0 ? '' : ` (exit ${code})`}`)
+  if (code !== 0) testCode = code
 }
-record('離線測試', testCode === 0, testCode === 0 ? 'test/check-workspace-topics.mjs 通過' : `exit code ${testCode}`)
+record('離線測試', testCode === 0 && testRan.length > 0, testRan.join(' + ') || '找不到測試檔')
 
 /* report ------------------------------------------------------------------ */
 const bad = results.filter((r) => !r.ok && r.level === 'error')

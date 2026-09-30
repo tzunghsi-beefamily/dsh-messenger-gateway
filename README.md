@@ -115,6 +115,23 @@ Each chat/topic keeps **one session** until you send `/new` (binding file
 `~/.dsh/messenger-gateway/chat-sessions.json`). While a turn is running, incoming messages are **queued** and
 answered one by one — set `telegram.queueWhileBusy: false` to get the upstream steer behaviour instead.
 
+### Default session vs attached session
+
+Every chat/topic owns a **default session**: created on its first Telegram message and resumed across host
+restarts. On top of that you can **jump into any existing session** — for example one you started in the Web GUI —
+and keep working on it from Telegram:
+
+| Command | What it does |
+|---------|--------------|
+| `/sessions [n]` | List the n most recent sessions with their ids (Telegram and GUI ones) |
+| `/attach <n\|id\|title>` | Continue that session here; this chat's default session is remembered |
+| `/detach` (aliases `/back`, `/default`) | Leave the attached session and go back to the default one |
+| `/new` | Forget both: the next message starts a brand-new default session |
+
+`/status` shows `mode: default` or `mode: attached → <session id>`. In the binding file a chat is stored as
+`{"defaultSessionId": "msgw-…", "attachedSessionId": "session-…"}` (v1 files that stored a bare id are migrated
+automatically).
+
 ## 🩺 Health check & tests
 
 ```bash
@@ -153,7 +170,7 @@ The full symptom → cause → fix table is in **[LOCAL-FIXES.md](LOCAL-FIXES.md
 | Telegram says `(no response)` although the GUI shows an answer | the reply was collected after the turn ended, or the gateway was rebuilt mid-turn (look for `gateway.stopped` in `events.log`) |
 | `Internal error: session "…" already exists` | a persisted session was passed to `agents.create()` instead of `agents.resume()` |
 | Every message opens a new session | the chat → session binding file is missing or was cleared |
-| Settings card saves nothing / token disappears | a config section lost its `.volatile()` marker (DSH 0.2.0-rc.2 only persists volatile fields) |
+| Replies land in an unexpected conversation | `/status` shows `mode: attached` — send `/detach` to go back to the default session || Settings card saves nothing / token disappears | a config section lost its `.volatile()` marker (DSH 0.2.0-rc.2 only persists volatile fields) |
 | Duplicate topic names | `/ws sync` was run again after a partial failure — `/ws reset` then one `/ws sync` |
 
 ## Install
@@ -195,6 +212,9 @@ Spoken replies use Telegram `sendVoice`. If TTS returns MP3 (or other non-Opus a
 | `/top` | Live server resources: RSS/Heap memory, uptime, active chats, reminders |
 | `/topic <name>` | Create a new Telegram forum topic in supergroups and start an isolated session |
 | `/ws [list\|sync\|reset\|probe]` | Workspace ↔ forum-topic mirror (**fork feature**, see above) |
+| `/sessions [n]` | List recent sessions with their ids (**fork feature**) |
+| `/attach <n\|id\|title>` | Continue an existing (e.g. GUI) session from here (**fork feature**) |
+| `/detach` | Back to this chat's default session (**fork feature**) |
 | `/role [name]` | Switch agent persona (`coder`, `architect`, `reviewer`, `writer`, `translator`, `concise`) |
 | `/skills` `/tools` | List active agent tools and capabilities |
 | `/fork` | Fork current session into a new independent session |

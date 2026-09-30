@@ -115,11 +115,27 @@ graph LR
 每個聊天/話題**固定一個 session**,直到你打 `/new`(綁定檔 `~/.dsh/messenger-gateway/chat-sessions.json`)。
 回合進行中收到的訊息會**排隊**,一則一則各別回覆;要回原版行為設 `telegram.queueWhileBusy: false`。
 
+### 預設 session 與接續 session
+
+每個聊天/話題都有一個**預設 session**(第一次從 Telegram 發話時建立,重啟後仍會接續)。
+在此之上,你可以**接續任何既有 session**(例如你在 Web GUI 開的那條),直接從 Telegram 繼續做:
+
+| 指令 | 作用 |
+|------|------|
+| `/sessions [n]` | 列出最近 n 條 session 與它們的 id(含 Telegram 與 GUI 的) |
+| `/attach <編號\|id 前幾碼\|標題片段>` | 接續該 session;這個話題的預設 session 會被保留 |
+| `/detach`(別名 `/back`、`/default`) | 退出接續的 session,回到預設 session |
+| `/new` | 兩者都清掉:下一則訊息建立全新的預設 session |
+
+`/status` 會顯示 `mode: default` 或 `mode: attached → <session id>`。綁定檔格式是
+`{"defaultSessionId": "msgw-…", "attachedSessionId": "session-…"}`(舊版只存一個 id 的檔案會自動遷移)。
+
 ## 🩺 健康檢查與測試
 
 ```bash
-npm test        # 離線測試:15 項(不需要 bot 或 DSH)
+npm test        # 離線測試:話題鏡射 15 項 + session 綁定 17 項(不需要 bot 或 DSH)
 npm run health  # 一鍵健康檢查 —— 每次更新 DSH 之後跑這個
+npm run sessions  # 列出所有 session 的 id / 標題 / 專案
 ```
 
 `tools/health-check.mjs` 會檢查檔案、`lib/` 全部語法、**每一項本 fork 修正是否還在**、狀態檔
@@ -134,7 +150,8 @@ npm run health  # 一鍵健康檢查 —— 每次更新 DSH 之後跑這個
 |------|----------|
 | GUI 有回答,Telegram 卻顯示 `(no response)` | 回合結束後才收到事件,或回合中 Gateway 被重建(看 `events.log` 的 `gateway.stopped`) |
 | `Internal error: session "…" already exists` | 既有 session 被丟給 `agents.create()`,應該用 `agents.resume()` |
-| 每則訊息都開新 session | `chat-sessions.json` 不存在或被清掉 |
+| 每則訊息都開新 session | `chat-sessions.json` 不存在或被清掉(或用了 `/new`) |
+| 回覆跑到別的對話 | `/status` 顯示 `mode: attached` —— 打 `/detach` 回到預設 session |
 | 設定卡存不了、token 消失 | 設定區塊少了 `.volatile()` 標記(DSH 0.2.0-rc.2 只持久化 volatile 欄位) |
 | 同名話題重複出現 | 失敗後又按了一次 `/ws sync` —— 先 `/ws reset` 再打一次 `/ws sync` |
 

@@ -38,7 +38,7 @@
   },
   "homepage": "https://github.com/tzunghsi-beefamily/dsh-messenger-gateway#readme",
   "scripts": {
-    "test": "node test/check-workspace-topics.mjs",
+    "test": "node test/check-workspace-topics.mjs && node test/check-session-binding.mjs",
     "health": "node tools/health-check.mjs",
     "sessions": "node tools/list-sessions.mjs"
   },
