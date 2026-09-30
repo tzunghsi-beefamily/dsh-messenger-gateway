@@ -1,0 +1,1402 @@
+﻿diff --git a/LOCAL-FIXES.md b/LOCAL-FIXES.md
+new file mode 100644
+index 0000000..64e2133
+--- /dev/null
++++ b/LOCAL-FIXES.md
+@@ -0,0 +1,156 @@
++# dsh-messenger-gateway 本機 fork 維護手冊
++
++> 對象:這台機器上的 **`C:\Users\DavidYeh\Documents\雜七雜八\dsh-messenger-gateway`**
++> 基礎版本:上游 `@goodandready/dsh-messenger-gateway@0.4.9`(MIT)
++> 上游來源:<https://github.com/GooDAnDReaDY/dsh-messenger-gateway>
++> 執行環境:DSH `0.2.0-rc.2` / Node 24 / Windows
++> 最後更新:2026-09-30
++
++---
++
++## 1. 這個 fork 在做什麼
++
++把 **DSH 的工作區(workspace registry)鏡射成 Telegram 論壇話題**,並讓「話題 → 工作區」對應到正確的執行目錄,手機發起的對話可以在 Web GUI 接手。
++
++```
++Telegram 話題 ──(workspace-topics.json)──> DSH 工作區路徑
++      │
++      └──(chat-sessions.json)──> 固定的 DSH session(直到 /new)
++```
++
++### 安裝方式(profile 連結,不是複製)
++
++```
++~/.dsh/profiles/web/package.json
++  dependencies:  "@goodandready/dsh-messenger-gateway": "link:C:/Users/DavidYeh/Documents/雜七雜八/dsh-messenger-gateway"
++  dsh.profile.bundles: [..., "@goodandready/dsh-messenger-gateway"]
++```
++
++* `link:` 是 **Junction**,所以改這裡的程式碼就是改執行中的外掛。
++* 但 **Node module cache 不會重載** → **改完必須重啟 `dsh web`**。
++* 設定寫在 `~/.dsh/profiles/web/cordis.patch.yml`(DSH 標準設定路徑,不是 hack)。
++
++### 狀態檔(`~/.dsh/messenger-gateway/`)
++
++| 檔案 | 內容 | 刪掉會怎樣 |
++|---|---|---|
++| `workspace-topics.json` | `forumChatId` + `工作區 → 話題` 對應 | 下次 `/ws sync` 重建全部話題(會產生孤兒話題) |
++| `chat-sessions.json` | `chatId:threadId → sessionId`(持久綁定) | 每則訊息重新開 session |
++| `events.log` | session 事件軌跡(上限 200 行,`telegram.debugEvents`) | 只是失去診斷資料 |
++
++---
++
++## 2. 症狀 → 根因 → 修法(七個已修問題)
++
++| # | 症狀 | 根因 | 修法(檔案) |
++|---|---|---|---|
++| 1 | GUI 卡片存了卻沒生效、token 遺失 | DSH 0.2.0-rc.2 **只持久化 `.volatile()` 標記的欄位**,未標記的欄位被靜默丟棄 | `lib/config.js`:對 `telegram`/`discord`/`slack`/`media`/`tts`/`agent` 加 `.volatile()` |
++| 2 | 同名話題一直重複建立 | ①建立話題之間沒有節流 ②**Telegram 沒有「列出話題」API**,無法得知同名話題已存在 | `lib/workspace-topics.js`:`createDelayMs`(1.5s)、429 `retry_after` 重試、`errorDetails` 回報、`autoReconcile` 預設 **false**;`/ws probe` 診斷 |
++| 3 | `(no response)`(主要) | **設定一變(volatile 更新)→ `sync()` 重建 Gateway → `stop()` dispose 所有 chat → 進行中的回合被殺**,新 listener 用新的空 `pending` 表 | `lib/index.js`:設定指紋比對,沒實際變更**不重建** |
++| 4 | `(no response)`(次要) | `pending`(回合收集器)是**每個 Gateway 一份** | `lib/gateway.js`:`sharedActiveTurns` 模組層共用 |
++| 5 | GUI 看不到 Telegram 的 session | 外掛用 `ctx.agents.create()` 直接建 session,**繞過 host 的 session controller**(平常由它負責 `attachSession`) | `lib/gateway.js`:`attachSessionToWorkspace()`(建立後 + 每輪 flush 後各試一次) |
++| 6 | 每則訊息都開新 session | 對應只在記憶體(`threadToSession`),重建/閒置回收即失去 | `lib/workspace-store.js`:`createChatSessionStore`;`lib/gateway.js` 建立時一律寫入;只有 `/new` 清除 |
++| 7 | 一次傳多則只有第一則有回答 | 原版 **steer** 設計把後續訊息注入當前回合,而**被注入的回合沒有收集器** → 回答不會送回 Telegram | `lib/gateway.js`:`queueWhileBusy`(預設 **true**)排隊 + `drainQueue()`,每則各自一回合、各自回覆 |
++
++### 編號 3 的診斷證據(值得記住的手法)
++
++```
++events.log 顯示:某一輪「全程 collector=no」
++  → 但 assistant/message、turn/end 都出現了
++  → 表示回合真的跑完,只是收集器看不到事件
++  → 加上 gateway.started/gateway.stopped 日誌後確認:Gateway 在回合中被重建
++```
++
++**關鍵洞察**:同一輪裡 `pending.set` 記錄 `collector=yes`,緊接著同一 session 的事件卻是 `collector=no`
++→ 一定是「**換了一個實例**」而不是「鍵打錯」。
++
++---
++
++## 3. DSH 0.2.0-rc.2 契約重點(踩過的坑)
++
++| 主題 | 事實 |
++|---|---|
++| 建立 / 續用 session | `ctx.agents.create()` **只能建新的**;續用必須 `ctx.agents.resume({ resumeSessionId })`。把既有 id 傳給 `create()` → `session "…" already exists` |
++| session 事件 | `ctx.on('session/event', (session, event) => …)`,事件型別如 `turn/start`、`user/message`、`assistant/message`、`turn/end`;文字在 `event.data.message.content` 的 `{type:'text'}` 區塊 |
++| 回合結束的權威訊號 | **`turn/end` 事件**。`agent.whenIdle()` 可能在回合真正開始前就 resolve(競態) |
++| 設定寫入 | 只有 `.volatile()` 子樹可從 UI 寫入;未標記 → `Config field "X" is not volatile`;secret 讀取會被遮蔽 |
++| 工作區歸屬 | `ctx.workspaceRegistry.list()`(同步)取得 entity,`entity.attachSession(sessionId)` 才會進 GUI 專案 |
++| Patch 分層 | Bundle → profile → home(`~/.dsh/cordis.patch.yml`)→ CLI;**patch 是整段取代,不是深層合併** |
++| 認證 | 外掛建立 session 不等於 GUI 的建立路徑;兩者行為差異要靠自己補 |
++
++---
++
++## 4. 診斷工具箱
++
++```powershell
++# 外掛狀態 / 設定 / 連線測試
++Invoke-WebRequest http://127.0.0.1:3080/dsh-messenger-gateway/status  -UseBasicParsing
++Invoke-WebRequest http://127.0.0.1:3080/dsh-messenger-gateway/config  -UseBasicParsing
++Invoke-WebRequest http://127.0.0.1:3080/dsh-messenger-gateway/smoke -Method POST -UseBasicParsing
++
++# 離線測試(15 項:建/改名/關閉/重開/幂等/持久化/cwd/General/缺目錄/同名/清除/重建)
++node C:\Users\DavidYeh\Documents\雜七雜八\gw-test\check-workspace-topics.mjs
++
++# 讀 DSH session 紀錄(zstd 多 frame,已處理)
++node C:\Users\DavidYeh\Documents\雜七雜八\gw-test\read-session.mjs `
++  "$env:USERPROFILE\.dsh\sessions\<workspace>\<session>\session.v4.jsonl.zstd" 20
++
++# 關鍵狀態檔
++Get-Content "$env:USERPROFILE\.dsh\messenger-gateway\events.log" -Tail 40
++Get-Content "$env:USERPROFILE\.dsh\messenger-gateway\workspace-topics.json" -Raw
++Get-Content "$env:USERPROFILE\.dsh\messenger-gateway\chat-sessions.json"  -Raw
++```
++
++Telegram 指令:`/ws`、`/ws list`、`/ws sync`、`/ws reset`、`/ws probe`、`/new`。
++
++### 判讀口訣
++
++| 現象 | 意思 |
++|---|---|
++| 事件連續 `collector=no` 且發生在回合中 | Gateway 被重建(看 `gateway.stopped`)或鍵不匹配 |
++| `gateway.stopped > 0`(非重啟) | 又有東西在觸發 `sync()` → 檢查 fingerprint 比對是否被繞過 |
++| `assistant/message` 有、Telegram 沒有 | 收集器沒收到 → 對照 `events.log` 的 `collector=` 旗標 |
++| Telegram `(no response)` 但 session 有回答 | 同上;後備路徑 `lastAssistantText()` 也會失效(此版 session 物件沒有 `.messages`) |
++
++---
++
++## 5. 維護流程
++
++### A. 改完程式碼
++
++1. `node --check lib/*.js`
++2. `node gw-test/check-workspace-topics.mjs`(15/15)
++3. **重啟 `dsh web`**(Ctrl+C → `npx @deepseek-ai/dsh web`)
++4. 在 Telegram 傳一則測試,檢查 `events.log`
++
++### B. 上游釋出新版時(重要)
++
++**不要**用 `dsh plugin update` —— 會蓋掉這個 fork。流程是:
++
++```powershell
++# 1) 抓上游新版原始碼到暫存目錄
++npm install --prefix <tmp> @goodandready/dsh-messenger-gateway@<新版> --cache <workspace>\.npm-cache
++# 2) 與本 fork 比對(排除 node_modules)
++#    套用 patches/local-fixes-vs-0.4.9.patch,逐項解決衝突
++```
++
++`patches/local-fixes-vs-0.4.9.patch` 是「本 fork 相對上游 0.4.9 的完整差異」,新版本可用它快速移植。
++移植後務必重跑 §4 的驗證。
++
++### C. 禁忌
++
++* ❌ 不要改 DSH 本體或 `~/.dsh` 的設定檔來繞問題(重啟就壞) —— 修正一律放這個外掛。
++* ❌ 不要 `dsh plugin update`。
++* ⚠️ `profiles/web/node_modules/@goodandready/` 是 Junction,**不要刪**(刪了外掛消失)。
++
++---
++
++## 6. 已知限制(非 bug)
++
++1. **Telegram 沒有「列出話題」API** → 無法自動偵測孤兒話題;`/ws reset` + `/ws sync` 是重建手段。
++2. **`autoReconcile` 預設關閉** → 在 GUI 新增工作區後,要手動在群組打一次 `/ws sync`。
++3. **同名話題可以存在** → 重建時舊話題不會被刪,需手動整理。
++4. **`queueWhileBusy: true` 與上游行為不同**(上游會把訊息併入當前回合且不回覆)。
++   要回上游行為:`telegram.queueWhileBusy: false`。
++5. **`debugEvents` 預設開啟** → 診斷用,上限 200 行;不需要時設 `telegram.debugEvents: false`。
++6. 後備路徑 `lastAssistantText()` 在 DSH 0.2.0-rc.2 上拿不到 session 訊息(無 `.messages`)→ 主要仍依賴事件收集。
+diff --git a/lib/adapters/telegram.js b/lib/adapters/telegram.js
+index 27bb570..e1a73fd 100644
+--- a/lib/adapters/telegram.js
++++ b/lib/adapters/telegram.js
+@@ -143,6 +143,21 @@ export class TelegramAdapter {
+     })
+   }
+ 
++  async editForumTopic(chatId, messageThreadId, name) {
++    return this.call('editForumTopic', {
++      chat_id: chatId,
++      message_thread_id: messageThreadId,
++      name: String(name || '').slice(0, 128),
++    })
++  }
++
++  async reopenForumTopic(chatId, messageThreadId) {
++    return this.call('reopenForumTopic', {
++      chat_id: chatId,
++      message_thread_id: messageThreadId,
++    })
++  }
++
+   // Bots have no presence dot; the short description is the closest surface.
+   // Opt-in only — it mutates the bot's global profile visible to all users.
+   async setStatusIndicator(text) {
+diff --git a/lib/commands.js b/lib/commands.js
+index 88f6de7..563240e 100644
+--- a/lib/commands.js
++++ b/lib/commands.js
+@@ -10,6 +10,7 @@ export const DEFAULT_TELEGRAM_COMMANDS = [
+   { command: 'model', description: 'Interactive model selector' },
+   { command: 'top', description: 'System resources: CPU, RAM, uptime' },
+   { command: 'topic', description: 'Create forum topic: /topic <name>' },
++  { command: 'ws', description: 'Workspace topics: /ws, /ws list, /ws sync' },
+   { command: 'status', description: 'Gateway and bot status' },
+   { command: 'setalert', description: 'Designate channel for alerts' },
+   { command: 'alert', description: 'Alert channel status: /alert [test]' },
+@@ -107,6 +108,11 @@ export const HELP_TEXT = [
+   '• /remind <time> <text> — set reminder (/remind 10m check deploy)',
+   '• /cron <interval> <prompt> — recurring autonomous task',
+   '',
++  '🗂 <b>Workspace topics:</b>',
++  '• /ws — show the workspace bound to this topic',
++  '• /ws list — list workspaces and their topics',
++  '• /ws sync — adopt this supergroup and re-sync topics',
++  '',
+   '⚙️ <b>Settings & Stats:</b>',
+   '• /status — gateway and active model status',
+   '• /top — system resource usage (RAM, uptime)',
+diff --git a/lib/config.js b/lib/config.js
+index 154c0d9..23dd1ea 100644
+--- a/lib/config.js
++++ b/lib/config.js
+@@ -61,17 +61,35 @@ export const PluginConfig = z.object({
+     }).default({ enabled: false }),
+     forumMirrorChatId: z.union([z.number(), z.string()]).default(''),
+     forumMirrorEnabled: z.boolean().default(false),
+-  }),
++    queueWhileBusy: z.boolean().default(true)
++      .description('While a turn runs, queue new messages so each gets its own reply (false = upstream steer behaviour)'),
++    debugEvents: z.boolean().default(true)
++      .description('Append every received session event to $DSH_HOME/messenger-gateway/events.log (diagnostics)'),
++    workspaceTopics: z.object({
++      enabled: z.boolean().default(true)
++        .description('Mirror the DSH workspace registry into Telegram forum topics (one topic per workspace)'),
++      forumChatId: z.union([z.number(), z.string()]).default('')
++        .description('Target forum supergroup; leave empty to adopt the chat where /ws sync is run'),
++      reconcileIntervalMs: z.number().default(60_000)
++        .description('How often the workspace registry is re-read (minimum 5000)'),
++      closeOnRemove: z.boolean().default(true)
++        .description('Close (never delete) the topic when its workspace is removed from the registry'),
++      autoReconcile: z.boolean().default(false)
++        .description('Run the periodic sync automatically; off by default so a new workspace is only picked up by an explicit /ws sync'),
++      createDelayMs: z.number().default(1500)
++        .description('Pause between two topic creations so Telegram flood control is not tripped'),
++    }).default({ enabled: true, forumChatId: '', reconcileIntervalMs: 60_000, closeOnRemove: true, autoReconcile: false, createDelayMs: 1500 }),
++  }).volatile(),
+   discord: z.object({
+     enabled: z.boolean().default(false),
+     botToken: z.string().role('secret').default(''),
+     webhookUrl: z.string().default(''),
+-  }).default({ enabled: false }),
++  }).default({ enabled: false }).volatile(),
+   slack: z.object({
+     enabled: z.boolean().default(false),
+     botToken: z.string().role('secret').default(''),
+     webhookUrl: z.string().default(''),
+-  }).default({ enabled: false }),
++  }).default({ enabled: false }).volatile(),
+   webhooks: z.object({
+     enabled: z.boolean().default(true),
+     secret: z.string().role('secret').default(''),
+@@ -81,12 +99,12 @@ export const PluginConfig = z.object({
+     maxDocBytes: z.number().default(20 * 1024 * 1024),
+     maxTextInjectBytes: z.number().default(100 * 1024),
+     maxImageBytes: z.number().default(20 * 1024 * 1024),
+-  }),
++  }).volatile(),
+   tts: z.object({
+     enabled: z.boolean().default(false),
+     maxChars: z.number().default(4000),
+     voiceSummary: z.boolean().default(false).description('Speak concise TL;DR summary while full text is sent to chat'),
+-  }),
++  }).volatile(),
+   agent: z.object({
+     provider: z.string().default(''),
+     model: z.string().default(''),
+@@ -98,7 +116,7 @@ export const PluginConfig = z.object({
+     photoOnlyMode: z.union([z.const('prompt'), z.const('run')]).default('prompt'),
+     sessionScope: z.union([z.const('chat'), z.const('user')]).default('user')
+       .description('In groups: user = per-user session; chat = shared session for the chat/topic'),
+-  }),
++  }).volatile(),
+ })
+ 
+ export const Config = PluginConfig
+diff --git a/lib/gateway-commands.js b/lib/gateway-commands.js
+index ed17835..2c6316b 100644
+--- a/lib/gateway-commands.js
++++ b/lib/gateway-commands.js
+@@ -267,10 +267,18 @@ export async function handleGatewayCommand(gw, key, text, input) {
+ 
+     if (cmd === '/new') {
+       const chat = gw.chats.get(key)
++      const threadKey = `${chatId}:${threadId || 0}`
++      // An explicit reset also clears the durable binding, so the next message
++      // starts a fresh session instead of resuming the old one.
++      gw.chatSessions?.remove(threadKey)
++      gw.threadToSession?.delete(threadKey)
+       if (chat) {
+         if (chat.abort) chat.abort.abort()
+         chat.pendingMedia = []
+-        gw.sessionToChat.delete(String(chat.agent.session.id))
++        chat.queue = []
++        const oldSessionId = String(chat.agent.session.id)
++        gw.sessionToChat.delete(oldSessionId)
++        gw.sessionToThread?.delete(oldSessionId)
+         gw.chats.delete(key)
+         await chat.dispose()
+         return reply('Session reset.')
+@@ -481,6 +489,56 @@ export async function handleGatewayCommand(gw, key, text, input) {
+       return reply(`voiceMode=${mode}\nyour /voice: ${prefLine}\nglobal tts: ${gw.config.tts?.enabled ? 'on' : 'off'}\nvoice summary: ${summaryState}`)
+     }
+ 
++    if (cmd === '/ws') {
++      const wt = gw.workspaceTopics
++      if (!wt) return reply('工作區話題同步未載入。')
++      const sub = (parts[1] || '').toLowerCase()
++      if (sub === 'sync') {
++        const chatType = String(input.chatType || '')
++        if (chatType === 'private') {
++          return reply('請在「已開啟話題的超級群組」裡執行 <code>/ws sync</code>——私人對話沒有話題。')
++        }
++        const adopted = wt.adoptForum(chatId)
++        const res = await wt.reconcile({ force: true }).catch((err) => ({ ok: false, reason: err?.message || String(err), errors: 1 }))
++        if (!res?.ok) {
++          return reply([
++            '同步失敗。',
++            `原因:<code>${String(res?.reason || 'unknown')}</code>`,
++            '請確認:這個群組已開啟「話題」、bot 是管理員且有「管理話題」權限。',
++          ].join('\n'))
++        }
++        const lines = [
++          adopted ? `✅ 已認養本群組為工作區論壇(<code>${chatId}</code>)` : `✅ 論壇已同步(<code>${chatId}</code>)`,
++          `工作區 ${res.total} 個 → 新建 ${res.created}、改名 ${res.renamed}、關閉 ${res.closed}、重開 ${res.reopened}、錯誤 ${res.errors}`,
++        ]
++        if (res.errorDetails?.length) {
++          lines.push('', '❗ <b>失敗原因</b>')
++          for (const detail of res.errorDetails) lines.push(`• <code>${String(detail).replace(/[<>&]/g, '')}</code>`)
++          lines.push('', '⚠️ 先不要再按 <code>/ws sync</code>:若某個話題其實已建立、只是回應無法辨識,重按會再建一個同名話題。')
++        } else {
++          lines.push('', '之後在 GUI 新增工作區時,再打一次 <code>/ws sync</code> 就會補上。')
++        }
++        return reply(lines.join('\n'))
++      }
++      if (sub === 'reset') {
++        const dropped = wt.reset()
++        return reply([
++          `♻️ 已清除 ${dropped} 筆話題對應(論壇仍保留 <code>${chatId}</code>)`,
++          '現在打 <code>/ws sync</code> 就會用目前的 7 個工作區重新建立話題。',
++          '⚠️ 舊的話題若還在,會變成沒有對應的話題 —— 請稍後手動刪掉它們。',
++        ].join('\n'))
++      }
++      if (sub === 'list') return reply(wt.describeAll())
++      if (sub === 'probe') {
++        const probe = await wt.probe()
++        if (probe.ok) {
++          return reply(`🔍 建話題測試成功:threadId=<code>${probe.threadId}</code>\n<code>${String(probe.raw).replace(/[<>]/g, '')}</code>\n(「dsh-probe」那個話題可以直接刪掉)`)
++        }
++        return reply(`🔍 建話題測試失敗:\n<code>${String(probe.error).replace(/[<>&]/g, '')}</code>`)
++      }
++      return reply(wt.describeTopic(chatId, threadId))
++    }
++
+     if (cmd === '/topic') {
+       const topicName = parts.slice(1).join(' ').trim()
+       if (!topicName) {
+diff --git a/lib/gateway-turn.js b/lib/gateway-turn.js
+index a0a5072..a0bcc8c 100644
+--- a/lib/gateway-turn.js
++++ b/lib/gateway-turn.js
+@@ -133,15 +133,49 @@ export async function buildUserContent(gw, input, signal) {
+   }
+ 
+ 
++const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
++
++/**
++ * Fallback for when no live session event reached the collector: read the newest
++ * assistant text straight off the session record. Keeps the reply working even
++ * if the host stops publishing `session/event` to this plugin.
++ */
++function lastAssistantText(session) {
++  const messages = Array.isArray(session?.messages) ? session.messages : []
++  for (let i = messages.length - 1; i >= 0; i--) {
++    const entry = messages[i]
++    const holder = entry?.message ?? entry
++    const role = holder?.role ?? entry?.role
++    if (role !== 'assistant') continue
++    const parts = holder?.content
++    if (typeof parts === 'string' && parts.trim()) return parts
++    if (Array.isArray(parts)) {
++      const text = parts
++        .filter((part) => part?.type === 'text' && typeof part.text === 'string')
++        .map((part) => part.text)
++        .join('')
++      if (text.trim()) return text
++    }
++  }
++  return ''
++}
++
+ export async function runGatewayTurn(gw, chat, input, signal) {
+     const { reply, typing, startStream, startProgress, react, inboundWasVoice, userId } = input
+     chat.turnActive = true
+-    const sessionId = chat.agent.session.id
++    const sessionId = String(chat.agent.session.id)
+     const tg = gw.tg()
+     const streaming = tg.streaming === true && typeof startStream === 'function'
+     const progressEnabled = tg.progressEnabled !== false
+     const collector = { parts: [], lastText: '', streamText: '', toolName: '', images: [], reason: undefined, onStream: undefined }
++    // Resolved by the session/event listener on `turn/end`. This is the
++    // authoritative "the turn really finished" signal: agent.whenIdle() alone can
++    // resolve before a freshly queued turn has even started.
++    collector.turnEnded = new Promise((resolve) => { collector.turnEndResolve = resolve })
+     gw.pending.set(sessionId, collector)
++    // Record the key used for this turn so the event log can be compared against
++    // the session ids the host publishes.
++    gw.logSessionEvent?.('pending.set', chat.agent.session)
+     let stopTyping = () => {}
+     let stream = null
+     let scheduler = null
+@@ -186,7 +220,19 @@ export async function runGatewayTurn(gw, chat, input, signal) {
+         source: { kind: 'user', plugin: PLUGIN, form: 'relay', origin: 'telegram' },
+       }))
+       const turnTimeoutMs = Number(gw.config.agent?.turnTimeoutMs) || 600_000
+-      await whenIdleWithTimeout(chat.agent, turnTimeoutMs, signal)
++      // Wait for the authoritative `turn/end` event first; fall back to the
++      // agent's idle signal plus a short grace period, and if nothing was
++      // collected yet give the turn a bounded extra window. Without this the
++      // plugin could answer "(no response)" while the turn was still running.
++      const idle = whenIdleWithTimeout(chat.agent, turnTimeoutMs, signal)
++      await Promise.race([
++        collector.turnEnded,
++        idle.then(() => sleep(1500)),
++        sleep(turnTimeoutMs),
++      ])
++      if (!collector.lastText && !collector.streamText) {
++        await Promise.race([collector.turnEnded, sleep(10_000)])
++      }
+       if (signal.aborted) {
+         if (progress) try { await progress.remove() } catch (err) { gw.logger?.debug?.('progress.remove failed on abort:', err?.message || err) }
+         if (typeof react === 'function') react('').catch?.((e) => { gw.logger?.debug?.('react clear error:', e?.message || e) })
+@@ -197,10 +243,16 @@ export async function runGatewayTurn(gw, chat, input, signal) {
+       }
+       const sessions = gw.ctx.get?.('sessions') || gw.ctx.sessions
+       await sessions?.flush?.(chat.agent.session)
++      // Retry the workspace attachment now that the session header is on disk,
++      // so the Web GUI groups this Telegram conversation under its project.
++      const boundCwd = gw.workspaceTopics?.cwdForChat(input)
++      if (boundCwd) await gw.attachSessionToWorkspace?.(chat.agent.session.id, boundCwd)
+       if (progress) try { await progress.remove() } catch (err) { gw.logger?.debug?.('progress.remove failed after turn:', err?.message || err) }
+       progress = null
+       if (typeof react === 'function') react('').catch?.((e) => { gw.logger?.debug?.('react clear error:', e?.message || e) })
+-      const rawAnswer = stripReasoningPreamble(stripImageUrls(collector.lastText || collector.streamText || collector.parts.join('\n\n')))
++      const rawAnswer = stripReasoningPreamble(stripImageUrls(
++        collector.lastText || collector.streamText || collector.parts.join('\n\n') || lastAssistantText(chat.agent.session),
++      ))
+       const processed = processDiagramsAndTables(rawAnswer, {
+         artifactPreviews: gw.tg().artifactPreviews !== false,
+       })
+diff --git a/lib/gateway.js b/lib/gateway.js
+index 7af85d5..c78fc68 100644
+--- a/lib/gateway.js
++++ b/lib/gateway.js
+@@ -1,4 +1,5 @@
+ import { randomUUID } from 'node:crypto'
++import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'
+ import { join } from 'node:path'
+ import { homedir } from 'node:os'
+ import { installModelSelection } from '@deepseek-ai/dsh-agent'
+@@ -17,6 +18,11 @@ import { formatAlertMessage, resolveAlertTarget } from './alerts.js'
+ import { createScheduler } from './scheduler.js'
+ import { createPairingStore } from './pairing.js'
+ import { isTopicGoneError } from './telegram-errors.js'
++import { WorkspaceTopics } from './workspace-topics.js'
++import { createChatSessionStore } from './workspace-store.js'
++
++/** In-flight turns, shared across Gateway instances (a settings change rebuilds one). */
++const sharedActiveTurns = new Map()
+ import { ensureContentArray } from './content-guard.js'
+ import { ApiHealthTracker } from './api-health.js'
+ import { t } from './locales/index.js'
+@@ -39,7 +45,10 @@ export class Gateway {
+     this.sessionToChat = new Map()
+     this.sessionToThread = new Map()
+     this.threadToSession = new Map()
+-    this.pending = new Map()
++    // Shared with every other Gateway instance: a config-driven rebuild must not
++    // orphan a turn that is already running (its events are delivered to whichever
++    // instance holds the listener).
++    this.pending = sharedActiveTurns
+     this.pendingAsks = new Map()
+     this.adapters = new Map()
+     this.adapterList = []
+@@ -79,6 +88,16 @@ export class Gateway {
+     }, { logger: this.ctx?.logger || console })
+     this.stats = { sent: 0, errors: 0, startedAt: Date.now() }
+     this.apiHealth = new ApiHealthTracker({ logger: this.logger })
++    // Registry -> Telegram topic mirror; also the source of each topic's cwd.
++    this.workspaceTopics = new WorkspaceTopics(this, {
++      filePath: join(home, 'messenger-gateway', 'workspace-topics.json'),
++      logger: this.logger,
++    })
++    // Bounded diagnostic trail: which session events actually reach this plugin.
++    this.debugLogFile = join(home, 'messenger-gateway', 'events.log')
++    // Durable chat/topic -> session binding: one Telegram conversation keeps its
++    // session until /new, even across restarts and idle reaps.
++    this.chatSessions = createChatSessionStore(join(home, 'messenger-gateway', 'chat-sessions.json'), { logger: this.logger })
+   }
+ 
+   get consecutiveApiFailures() {
+@@ -97,6 +116,23 @@ export class Gateway {
+     this.apiHealth.recordSuccess()
+   }
+ 
++  /**
++   * Append one line per received session event (bounded to ~200 lines).
++   * Diagnostic for "the turn ended but the reply said (no response)".
++   */
++  logSessionEvent(type, session) {
++    if (this.config.telegram?.debugEvents === false) return
++    try {
++      const sessionId = String(session?.id ?? '')
++      const line = `${new Date().toISOString()}  ${String(type || '?')}  session=${sessionId}  collector=${this.pending.has(sessionId) ? 'yes' : 'no'}\n`
++      appendFileSync(this.debugLogFile, line, 'utf8')
++      const lines = readFileSync(this.debugLogFile, 'utf8').split('\n').filter(Boolean)
++      if (lines.length > 240) writeFileSync(this.debugLogFile, `${lines.slice(-200).join('\n')}\n`, 'utf8')
++    } catch {
++      /* best effort: never let diagnostics break a turn */
++    }
++  }
++
+   resolveLocale(input) {
+     if (input?.locale) return input.locale
+     const chatId = input?.chatId
+@@ -183,7 +219,9 @@ export class Gateway {
+   }
+ 
+   async start() {
++    this.logSessionEvent('gateway.started', null)
+     this.disposeListener = this.ctx.on('session/event', (session, event) => {
++      this.logSessionEvent(event?.type, session)
+       if (this.config.telegram?.forumMirrorEnabled) {
+         if (event.type === 'turn/start' || event.type === 'session/create') {
+           this.mirrorSessionToForumTopic(session).catch?.((e) => this.logger?.debug?.('mirror error:', e?.message || e))
+@@ -192,8 +230,14 @@ export class Gateway {
+         }
+       }
+ 
+-      const collector = this.pending.get(session.id)
++      const sessionKey = String(session?.id ?? '')
++      // The collector is normally keyed by session id. Fall back to the single
++      // active turn so a key-shape difference in a host release cannot silently
++      // drop the reply; the fallback is recorded in the event log.
++      const collector = this.pending.get(sessionKey)
++        || (this.pending.size === 1 ? this.pending.values().next().value : undefined)
+       if (!collector) return
++      if (!this.pending.has(sessionKey)) this.logSessionEvent(`lookup-fallback(${sessionKey})`, session)
+       if (event.type === 'assistant/message') {
+         const msg = event.data.message
+         const text = assistantText(msg)
+@@ -214,6 +258,7 @@ export class Gateway {
+         collector.onStream?.(collector.streamText || '', '')
+       } else if (event.type === 'turn/end') {
+         collector.reason = event.data.reason
++        collector.turnEndResolve?.(event.data?.reason)
+       }
+     })
+     const adapters = createAdapters({
+@@ -240,6 +285,9 @@ export class Gateway {
+         this.ctx.logger?.warn?.(`Initial syncTelegramCommands: ${err?.message || err}`)
+       })
+     }
++    await this.workspaceTopics.start().catch((err) => {
++      this.ctx.logger?.warn?.(`dsh-messenger-gateway: workspaceTopics start: ${err?.message || err}`)
++    })
+     const rawIdle = Number(this.config.agent?.idleTimeoutMs)
+     const idleMs = Number.isFinite(rawIdle) && rawIdle > 0 ? rawIdle : 86_400_000
+     this.idleTimer = setInterval(() => this.reapIdle(), Math.min(idleMs, 60_000))
+@@ -248,6 +296,8 @@ export class Gateway {
+   }
+ 
+   stop() {
++    this.logSessionEvent('gateway.stopped', null)
++    if (this.workspaceTopics) this.workspaceTopics.stop()
+     if (this.scheduler) this.scheduler.stop()
+     if (this.disposeListener) this.disposeListener()
+     if (this.idleTimer) clearInterval(this.idleTimer)
+@@ -378,6 +428,16 @@ export class Gateway {
+       const turnInput = { ...input, text: body, attachments, inboundWasVoice, personaOverride }
+ 
+       // Hermes-like steer: while a turn is running, inject followup instead of abort+restart
++      // While a turn is running, queue the message. A steered turn runs without a
++      // collector, so its answer never reaches Telegram; queued messages each get
++      // their own turn and their own reply.
++      if (this.isChatBusy(chat) && this.config.telegram?.queueWhileBusy !== false) {
++        chat.queue = [...(chat.queue || []), turnInput]
++        chat.lastUsed = Date.now()
++        try { await reply(`↪️ 已排入佇列(${chat.queue.length}),這一輪結束後會回覆。`) } catch (err) { this.recordApiFailure('reply.queued', err) }
++        return
++      }
++
+       if (this.isChatBusy(chat)) {
+         const steerText = body || (hasMedia ? '(steer: media)' : '')
+         const content = await this.buildUserContent({
+@@ -413,7 +473,7 @@ export class Gateway {
+         }).catch((e) => this.recordApiFailure('alert.turn', e))
+         chat.turnActive = false
+         chat.abort = undefined
+-      })
++      }).finally(() => { this.drainQueue(chat).catch(() => {}) })
+     } catch (err) {
+       const msg = err instanceof Error ? err.message : String(err)
+       this.ctx.logger?.warn?.(`dsh-messenger-gateway: message: ${msg}`)
+@@ -445,7 +505,7 @@ export class Gateway {
+     let chat = this.chats.get(key)
+     if (!chat) {
+       const threadKey = `${input.chatId}:${input.threadId || 0}`
+-      const existingSessionId = this.threadToSession.get(threadKey)
++      const existingSessionId = this.threadToSession.get(threadKey) || this.chatSessions.get(threadKey)
+       chat = await this.createChat(key, input, existingSessionId)
+       this.chats.set(key, chat)
+     }
+@@ -466,36 +526,83 @@ export class Gateway {
+     return { provider: provider || selection.provider, model: model || selection.model }
+   }
+ 
++  /**
++   * Attach a messenger-created session to its workspace record so the Web GUI
++   * groups it under that project. Sessions created in-process bypass the host
++   * session controller, which is what normally records the attachment.
++   * Best effort: the session header may not be persisted yet.
++   */
++  async attachSessionToWorkspace(sessionId, cwd) {
++    try {
++      const registry = this.ctx.get?.('workspaceRegistry') || this.ctx.workspaceRegistry
++      if (!registry?.list) return false
++      const project = registry.list().find((candidate) => String(candidate?.path) === String(cwd))
++      if (!project?.attachSession) return false
++      await project.attachSession(String(sessionId))
++      this.logger?.info?.(`dsh-messenger-gateway: attached session ${sessionId} to workspace "${project.title}"`)
++      return true
++    } catch (err) {
++      this.logger?.debug?.(`dsh-messenger-gateway: attachSession(${sessionId}) failed: ${err?.message || err}`)
++      return false
++    }
++  }
++
+   async createChat(key, input, existingSessionId) {
+     const { provider, model } = this.resolveAgentModel()
+     const agentCfg = this.config.agent || {}
+-    const cwd = agentCfg.cwd || process.cwd()
++    // A topic bound to a DSH workspace runs its sessions in that workspace, so
++    // the session lands under the right project in the Web GUI. Topics without a
++    // binding (General, direct chat) keep the configured default.
++    const boundCwd = this.workspaceTopics?.cwdForChat(input)
++    const cwd = boundCwd || agentCfg.cwd || process.cwd()
+     const self = this
+     const agents = this.ctx.get?.('agents') || this.ctx.agents
+-    const targetSessionId = existingSessionId ? SessionId(existingSessionId) : SessionId(`msgw-${randomUUID()}`)
+-    const handle = await agents.create({
+-      sessionId: targetSessionId,
+-      meta: { cwd },
+-      agentOptions: { provider, model },
+-      setup: (agentCtx) => {
+-        installModelSelection(agentCtx, { current: { provider, model }, assembled: undefined })
+-        if (self.tg().approvalsEnabled !== false) {
+-          agentCtx.on('approval/request', (req, next) => self.answerApproval(key, req, next))
+-        }
+-      },
+-    })
++    const setup = (agentCtx) => {
++      installModelSelection(agentCtx, { current: { provider, model }, assembled: undefined })
++      if (self.tg().approvalsEnabled !== false) {
++        agentCtx.on('approval/request', (req, next) => self.answerApproval(key, req, next))
++      }
++    }
++    // `agents.create()` only builds a NEW session; a persisted session must be
++    // loaded through `agents.resume()` (option: resumeSessionId). Passing an
++    // existing id to create() fails with `session "…" already exists`.
++    let handle
++    if (existingSessionId && typeof agents.resume === 'function') {
++      try {
++        handle = await agents.resume({
++          resumeSessionId: String(existingSessionId),
++          agentOptions: { provider, model },
++          setup,
++        })
++      } catch (err) {
++        this.logger?.warn?.(`dsh-messenger-gateway: resume(${existingSessionId}) failed, starting a new session: ${err?.message || err}`)
++        if (input) this.chatSessions?.remove(`${input.chatId}:${input.threadId || 0}`)
++        handle = undefined
++      }
++    }
++    if (!handle) {
++      handle = await agents.create({
++        sessionId: SessionId(`msgw-${randomUUID()}`),
++        meta: { cwd },
++        agentOptions: { provider, model },
++        setup,
++      })
++    }
+     await handle.agent.whenIdle()
++    if (boundCwd) await this.attachSessionToWorkspace(handle.agent.session.id, boundCwd)
+     const chat = {
+       key, agent: handle.agent, dispose: handle.dispose, busy: Promise.resolve(),
+       lastUsed: Date.now(), abort: undefined, pendingMedia: [], turnActive: false,
+       sessionAllowlist: new Set(),
+       target: input ? { platform: input.platform, chatId: input.chatId, threadId: input.threadId || 0 } : undefined,
+     }
+-    this.sessionToChat.set(String(handle.agent.session.id), key)
+-    if (existingSessionId && input) {
++    const sessionId = String(handle.agent.session.id)
++    this.sessionToChat.set(sessionId, key)
++    if (input) {
+       const threadKey = `${input.chatId}:${input.threadId || 0}`
+-      this.threadToSession.set(threadKey, existingSessionId)
+-      this.sessionToThread.set(existingSessionId, { chatId: input.chatId, threadId: input.threadId || 0 })
++      this.threadToSession.set(threadKey, sessionId)
++      this.sessionToThread.set(sessionId, { chatId: input.chatId, threadId: input.threadId || 0 })
++      this.chatSessions.set(threadKey, sessionId)
+     }
+     return chat
+   }
+@@ -512,6 +619,30 @@ export class Gateway {
+     return runGatewayTurn(this, chat, input, signal)
+   }
+ 
++  /** Run messages that arrived while a turn was active — one turn and one reply each. */
++  async drainQueue(chat) {
++    if (chat.draining) return
++    chat.draining = true
++    try {
++      while (Array.isArray(chat.queue) && chat.queue.length) {
++        const next = chat.queue.shift()
++        chat.turnActive = true
++        chat.abort = new AbortController()
++        const run = chat.busy.then(() => this.runTurn(chat, next, chat.abort.signal))
++        chat.busy = run.catch(() => {})
++        try {
++          await run
++        } catch (err) {
++          this.ctx.logger?.warn?.(`dsh-messenger-gateway: queued turn: ${err?.message || err}`)
++        }
++      }
++    } finally {
++      chat.draining = false
++      chat.turnActive = false
++      chat.abort = undefined
++    }
++  }
++
+   reapIdle() {
+     const rawTimeout = Number(this.config.agent?.idleTimeoutMs)
+     const timeout = Number.isFinite(rawTimeout) && rawTimeout > 0 ? rawTimeout : 86_400_000
+diff --git a/lib/index.js b/lib/index.js
+index 46be7fd..2575dd9 100644
+--- a/lib/index.js
++++ b/lib/index.js
+@@ -51,6 +51,7 @@ function publicConfig(cfg) {
+       approvalsEnabled: cfg.telegram.approvalsEnabled,
+       groupsEnabled: cfg.telegram.groupsEnabled,
+       groupRequireMention: cfg.telegram.groupRequireMention,
++      workspaceTopics: cfg.telegram.workspaceTopics,
+       reactionsEnabled: cfg.telegram.reactionsEnabled,
+       transport: cfg.telegram.transport,
+       webhookUrl: cfg.telegram.webhookUrl,
+@@ -149,10 +150,23 @@ export function apply(ctx, config) {
+   const turnStarts = new Map()
+   const getWebServer = () => ctx.get?.('webServer') || ctx.webServer
+ 
++  let lastConfigFingerprint
+   const sync = () => {
+-    if (gateway) { gateway.stop(); gateway = undefined }
+     const effective = source()
+-    if (effective.enabled === false) return
++    if (effective.enabled === false) {
++      if (gateway) { gateway.stop(); gateway = undefined }
++      lastConfigFingerprint = undefined
++      return
++    }
++    // A rebuild stops the gateway, which disposes every live chat: that kills an
++    // in-flight turn and drops the chat -> session mapping. DSH re-announces
++    // volatile updates that carry no actual change, so only rebuild on a real
++    // difference (this was the cause of both "(no response)" and a new session
++    // for every message).
++    const fingerprint = JSON.stringify(effective)
++    if (gateway && fingerprint === lastConfigFingerprint) return
++    lastConfigFingerprint = fingerprint
++    if (gateway) { gateway.stop(); gateway = undefined }
+     gateway = new Gateway(ctx, effective, {
+       persistAllowedUserIds: async (ids) => {
+         if (!settingsApi?.isReady?.()) return
+diff --git a/lib/workspace-store.js b/lib/workspace-store.js
+new file mode 100644
+index 0000000..b5e25be
+--- /dev/null
++++ b/lib/workspace-store.js
+@@ -0,0 +1,186 @@
++import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync, unlinkSync } from 'node:fs'
++import { dirname } from 'node:path'
++import { randomUUID } from 'node:crypto'
++
++/** Atomic JSON write; same approach as the pairing store. */
++function writeJsonAtomicSync(filePath, data) {
++  const dir = dirname(filePath)
++  mkdirSync(dir, { recursive: true })
++  const tmpPath = `${filePath}.${randomUUID().slice(0, 8)}.tmp`
++  try {
++    writeFileSync(tmpPath, JSON.stringify(data, null, 2), 'utf8')
++    renameSync(tmpPath, filePath)
++  } catch (err) {
++    try { unlinkSync(tmpPath) } catch { /* best-effort temp cleanup */ }
++    throw err
++  }
++}
++
++const emptyState = () => ({ version: 1, forumChatId: '', bindings: {} })
++
++const normalizeThreadId = (threadId) => {
++  const n = Number(threadId)
++  return Number.isFinite(n) && n > 0 ? Math.trunc(n) : 0
++}
++
++/**
++ * Durable map of DSH workspace -> Telegram forum topic.
++ *
++ * `bindings[workspaceId] = { chatId, threadId, title, path, closed }`
++ *
++ * The store is deliberately independent of the plugin settings document: the
++ * forum can be adopted from a chat command (/ws sync), and thread ids must
++ * survive both host restarts and settings rewrites.
++ */
++export function createWorkspaceTopicsStore(filePath, { logger } = {}) {
++  let state = emptyState()
++
++  if (filePath && existsSync(filePath)) {
++    try {
++      const raw = JSON.parse(readFileSync(filePath, 'utf8'))
++      if (raw && typeof raw === 'object') {
++        state = {
++          version: 1,
++          forumChatId: raw.forumChatId === undefined || raw.forumChatId === null ? '' : String(raw.forumChatId),
++          bindings: raw.bindings && typeof raw.bindings === 'object' && !Array.isArray(raw.bindings) ? raw.bindings : {},
++        }
++      }
++    } catch (err) {
++      logger?.warn?.(`[dsh-messenger-gateway] workspace-topics store read error: ${err?.message || err}`)
++    }
++  }
++
++  const persist = () => {
++    if (!filePath) return
++    try {
++      writeJsonAtomicSync(filePath, state)
++    } catch (err) {
++      logger?.warn?.(`[dsh-messenger-gateway] workspace-topics store persist error: ${err?.message || err}`)
++    }
++  }
++
++  return {
++    getForumChatId: () => state.forumChatId,
++
++    /**
++     * Adopt a forum. Changing the forum invalidates every recorded thread id,
++     * because a thread id is only meaningful inside one chat.
++     * @returns true when the forum changed.
++     */
++    setForumChatId(chatId) {
++      const next = String(chatId ?? '').trim()
++      if (next === state.forumChatId) return false
++      if (state.forumChatId) state.bindings = {}
++      state.forumChatId = next
++      persist()
++      return true
++    },
++
++    all: () => Object.entries(state.bindings).map(([workspaceId, rec]) => ({ workspaceId, ...rec })),
++
++    byWorkspace: (workspaceId) => {
++      const rec = state.bindings[String(workspaceId)]
++      return rec ? { workspaceId: String(workspaceId), ...rec } : null
++    },
++
++    byThread(chatId, threadId) {
++      const tid = normalizeThreadId(threadId)
++      if (!tid) return null
++      const cid = String(chatId ?? '')
++      for (const [workspaceId, rec] of Object.entries(state.bindings)) {
++        if (normalizeThreadId(rec.threadId) === tid && String(rec.chatId) === cid) {
++          return { workspaceId, ...rec }
++        }
++      }
++      return null
++    },
++
++    set(workspaceId, rec) {
++      state.bindings[String(workspaceId)] = {
++        chatId: String(rec.chatId ?? ''),
++        threadId: normalizeThreadId(rec.threadId),
++        title: String(rec.title ?? ''),
++        path: String(rec.path ?? ''),
++        closed: Boolean(rec.closed),
++      }
++      persist()
++    },
++
++    markClosed(workspaceId) {
++      const rec = state.bindings[String(workspaceId)]
++      if (!rec) return
++      rec.closed = true
++      persist()
++    },
++
++    markOpen(workspaceId) {
++      const rec = state.bindings[String(workspaceId)]
++      if (!rec) return
++      rec.closed = false
++      persist()
++    },
++
++    remove(workspaceId) {
++      if (state.bindings[String(workspaceId)]) {
++        delete state.bindings[String(workspaceId)]
++        persist()
++      }
++    },
++
++    /** Drop every binding but keep the adopted forum. */
++    clear() {
++      const dropped = Object.keys(state.bindings).length
++      state.bindings = {}
++      persist()
++      return dropped
++    },
++
++    size: () => Object.keys(state.bindings).length,
++  }
++}
++
++/**
++ * Durable chat/topic -> session binding. A Telegram conversation keeps resuming
++ * the same DSH session across host restarts and idle reaps; only an explicit
++ * `/new` (or an unrecoverable session) starts a fresh one.
++ */
++export function createChatSessionStore(filePath, { logger } = {}) {
++  let bindings = {}
++  if (filePath && existsSync(filePath)) {
++    try {
++      const raw = JSON.parse(readFileSync(filePath, 'utf8'))
++      if (raw?.bindings && typeof raw.bindings === 'object' && !Array.isArray(raw.bindings)) {
++        bindings = raw.bindings
++      }
++    } catch (err) {
++      logger?.warn?.(`[dsh-messenger-gateway] chat-session store read error: ${err?.message || err}`)
++    }
++  }
++
++  const persist = () => {
++    if (!filePath) return
++    try {
++      writeJsonAtomicSync(filePath, { version: 1, bindings })
++    } catch (err) {
++      logger?.warn?.(`[dsh-messenger-gateway] chat-session store persist error: ${err?.message || err}`)
++    }
++  }
++
++  return {
++    get: (threadKey) => bindings[String(threadKey)],
++    set(threadKey, sessionId) {
++      const key = String(threadKey)
++      const value = String(sessionId)
++      if (bindings[key] === value) return
++      bindings[key] = value
++      persist()
++    },
++    remove(threadKey) {
++      const key = String(threadKey)
++      if (bindings[key] === undefined) return
++      delete bindings[key]
++      persist()
++    },
++    size: () => Object.keys(bindings).length,
++  }
++}
+diff --git a/lib/workspace-topics.js b/lib/workspace-topics.js
+new file mode 100644
+index 0000000..b3a4f32
+--- /dev/null
++++ b/lib/workspace-topics.js
+@@ -0,0 +1,417 @@
++import { existsSync } from 'node:fs'
++import { isTopicGoneError } from './telegram-errors.js'
++import { createWorkspaceTopicsStore } from './workspace-store.js'
++
++/** Telegram's own limit for forum topic names. */
++const MAX_TOPIC_NAME = 128
++
++const esc = (value) => String(value ?? '')
++  .replace(/&/g, '&amp;')
++  .replace(/</g, '&lt;')
++  .replace(/>/g, '&gt;')
++
++const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
++
++/** Telegram flood control reports `retry_after` (seconds) — honor it instead of hammering. */
++function parseRetryAfter(err) {
++  const m = String(err?.message || '').match(/retry[_ ]?after['":\s]+(\d+)/i)
++  const seconds = m ? Number(m[1]) : NaN
++  return Number.isFinite(seconds) && seconds > 0 ? Math.min(seconds, 120) : 0
++}
++
++function truncateName(title, suffix = '') {
++  const base = String(title ?? '').trim() || 'workspace'
++  const room = Math.max(0, MAX_TOPIC_NAME - suffix.length)
++  return (base.length > room ? base.slice(0, room) : base) + suffix
++}
++
++/**
++ * Mirrors the DSH workspace registry into Telegram forum topics.
++ *
++ * One workspace ⇄ one topic in a single forum supergroup. The topic's recorded
++ * directory becomes the working directory of every session created inside that
++ * topic, so the DSH session lands in the project it belongs to and shows up
++ * under that project in the Web GUI.
++ *
++ * The registry is the single source of truth (workspaces are registered in the
++ * GUI); this class never registers or removes a workspace. It only reconciles
++ * the Telegram side: create a topic for a new workspace, rename it when the
++ * title changes, close it when the workspace is removed, reopen it when the
++ * same workspace comes back.
++ */
++export class WorkspaceTopics {
++  constructor(gw, { filePath, logger } = {}) {
++    this.gw = gw
++    this.logger = logger || gw?.logger || console
++    this.store = createWorkspaceTopicsStore(filePath, { logger: this.logger })
++    this.timer = undefined
++    this.running = false
++    this.warnedNoRegistry = false
++    this.warnedMissingPaths = new Set()
++    this.stats = { created: 0, renamed: 0, closed: 0, reopened: 0, errors: 0, lastRun: 0 }
++    this.lastSummary = null
++  }
++
++  get config() {
++    return this.gw?.config?.telegram?.workspaceTopics || {}
++  }
++
++  get enabled() {
++    return this.config.enabled === true
++  }
++
++  /** Configured forum wins over the adopted one, so a deployment can pin it. */
++  forumChatId() {
++    const fromConfig = String(this.config.forumChatId ?? '').trim()
++    if (fromConfig) {
++      this.store.setForumChatId(fromConfig)
++      return fromConfig
++    }
++    return this.store.getForumChatId()
++  }
++
++  registry() {
++    const ctx = this.gw?.ctx
++    return ctx?.get?.('workspaceRegistry') || ctx?.workspaceRegistry || null
++  }
++
++  adapter() {
++    return this.gw?.getAdapter?.('telegram') || null
++  }
++
++  async start() {
++    if (!this.enabled) {
++      this.logger?.info?.('dsh-messenger-gateway: workspace topic mirror disabled')
++      return
++    }
++    const chatId = this.forumChatId()
++    if (!chatId) {
++      this.logger?.warn?.(
++        'dsh-messenger-gateway: telegram.workspaceTopics.enabled is true but no forum is adopted yet — ' +
++        'run /ws sync inside the topics-enabled supergroup to adopt it',
++      )
++      return
++    }
++    await this.reconcile().catch((err) => {
++      this.logger?.warn?.(`dsh-messenger-gateway: workspace reconcile failed: ${err?.message || err}`)
++    })
++    const raw = Number(this.config.reconcileIntervalMs)
++    const ms = Number.isFinite(raw) && raw >= 5000 ? raw : 60_000
++    if (this.config.autoReconcile === true) {
++      this.timer = setInterval(() => {
++        this.reconcile().catch((err) => {
++          this.logger?.warn?.(`dsh-messenger-gateway: workspace reconcile failed: ${err?.message || err}`)
++        })
++      }, ms)
++      this.timer.unref?.()
++    } else {
++      this.logger?.info?.('dsh-messenger-gateway: periodic workspace sync is off (workspaceTopics.autoReconcile=false) — run /ws sync after changing workspaces')
++    }
++  }
++
++  stop() {
++    if (this.timer) {
++      clearInterval(this.timer)
++      this.timer = undefined
++    }
++  }
++
++  /**
++   * Working directory for a session created from this chat/topic.
++   * Returns undefined when the topic carries no live workspace binding, so the
++   * caller falls back to the configured default.
++   */
++  cwdForChat(input) {
++    if (!this.enabled || !input) return undefined
++    const rec = this.store.byThread(input.chatId, input.threadId)
++    if (!rec?.path) return undefined
++    if (!existsSync(rec.path)) {
++      if (!this.warnedMissingPaths.has(rec.path)) {
++        this.warnedMissingPaths.add(rec.path)
++        this.logger?.warn?.(
++          `dsh-messenger-gateway: workspace directory for topic ${rec.threadId} is missing: ${rec.path} — ` +
++          'sessions in that topic fall back to the default working directory',
++        )
++      }
++      return undefined
++    }
++    return rec.path
++  }
++
++  /** Adopt a forum from a chat command; returns true when the forum changed. */
++  adoptForum(chatId) {
++    return this.store.setForumChatId(chatId)
++  }
++
++  describeTopic(chatId, threadId) {
++    if (!this.enabled) {
++      return '工作區話題同步未啟用。請在 DSH 設定把 <code>telegram.workspaceTopics.enabled</code> 設為 true。'
++    }
++    const forum = this.forumChatId()
++    if (!forum) {
++      return '尚未指定論壇。請在「已開啟話題的超級群組」裡打 <code>/ws sync</code>,我會把這個群組認養為工作區論壇。'
++    }
++    const rec = this.store.byThread(chatId, threadId)
++    if (!rec) {
++      return [
++        '這個話題沒有對應任何工作區。',
++        '• 到 Web GUI 新增/開啟工作區後,打 <code>/ws sync</code> 重新同步',
++        '• <code>/ws list</code> 看目前所有對應',
++      ].join('\n')
++    }
++    const exists = existsSync(rec.path)
++    return [
++      `📁 <b>${esc(rec.title)}</b>`,
++      `<code>${esc(rec.path)}</code>`,
++      `狀態:${rec.closed ? '已關閉' : '啟用中'}${exists ? '' : '(資料夾不存在,會退回預設目錄)'}`,
++      '權限:沿用本機 DSH 的 permission 預設。',
++    ].join('\n')
++  }
++
++  describeAll() {
++    if (!this.enabled) return '工作區話題同步未啟用。'
++    const bindings = new Map(this.store.all().map((rec) => [rec.workspaceId, rec]))
++    let projects = []
++    const registry = this.registry()
++    if (registry?.list) {
++      try {
++        projects = registry.list() || []
++      } catch (err) {
++        return `讀取工作區註冊表失敗:${esc(err?.message || err)}`
++      }
++    }
++    if (!projects.length) return '目前沒有任何已註冊的工作區(請先在 Web GUI 開啟資料夾)。'
++
++    const lines = [`🗂 <b>工作區 → 話題</b>(論壇 <code>${esc(this.forumChatId() || '(未認養)')}</code>)`]
++    for (const project of projects.slice(0, 40)) {
++      const rec = bindings.get(String(project?.id ?? ''))
++      const mark = !rec ? '⬜ 尚未同步' : (rec.closed ? '🔒 已關閉' : `✅ 話題 ${rec.threadId}`)
++      lines.push(`• <b>${esc(project?.title || project?.path)}</b> — ${mark}`)
++    }
++    if (projects.length > 40) lines.push(`…共 ${projects.length} 個工作區`)
++    return lines.join('\n')
++  }
++
++  /**
++   * One reconciliation pass. Idempotent: safe to call at any time, and safe to
++   * call concurrently (a second call is a no-op while one is running).
++   */
++  async reconcile({ force = false } = {}) {
++    const summary = { ok: false, reason: '', total: 0, created: 0, renamed: 0, closed: 0, reopened: 0, errors: 0, errorDetails: [] }
++    this.lastSummary = summary
++
++    if (!this.enabled && !force) {
++      summary.reason = 'disabled'
++      return summary
++    }
++    const chatId = this.forumChatId()
++    if (!chatId) {
++      summary.reason = 'no-forum'
++      return summary
++    }
++    const adapter = this.adapter()
++    if (!adapter?.createForumTopic) {
++      summary.reason = 'no-telegram-adapter'
++      return summary
++    }
++    const registry = this.registry()
++    if (!registry?.list) {
++      if (!this.warnedNoRegistry) {
++        this.warnedNoRegistry = true
++        this.logger?.warn?.('dsh-messenger-gateway: workspaceRegistry service unavailable — workspace topic mirror idle')
++      }
++      summary.reason = 'no-workspace-registry'
++      return summary
++    }
++    if (this.running) {
++      summary.reason = 'busy'
++      return summary
++    }
++
++    this.running = true
++    try {
++      let projects = []
++      try {
++        projects = registry.list() || []
++      } catch (err) {
++        summary.reason = 'registry-read-failed'
++        summary.errors++
++        this.logger?.warn?.(`dsh-messenger-gateway: workspaceRegistry.list failed: ${err?.message || err}`)
++        return summary
++      }
++
++      const wanted = new Map()
++      for (const project of projects) {
++        const id = String(project?.id ?? '')
++        const path = String(project?.path ?? '')
++        if (!id || !path) continue
++        wanted.set(id, { title: String(project?.title ?? '').trim() || path, path })
++      }
++      summary.total = wanted.size
++
++      const usedNames = new Set(
++        this.store.all()
++          .filter((rec) => !rec.closed && rec.threadId)
++          .map((rec) => String(rec.title)),
++      )
++
++      for (const [workspaceId, want] of wanted) {
++        const rec = this.store.byWorkspace(workspaceId)
++
++        // New workspace -> create its topic.
++        if (!rec || !rec.threadId) {
++          if (rec) this.store.remove(workspaceId)
++          const name = this.uniqueName(want.title, usedNames)
++          const delayMs = Number(this.config.createDelayMs)
++          if (summary.created > 0 && Number.isFinite(delayMs) && delayMs > 0) await sleep(delayMs)
++          try {
++            const threadId = await this.createTopic(adapter, chatId, name)
++            if (!threadId) throw new Error('createForumTopic returned no message_thread_id — 話題可能已經建好,但回應無法辨識')
++            this.store.set(workspaceId, { chatId, threadId, title: name, path: want.path, closed: false })
++            usedNames.add(name)
++            summary.created++
++            this.stats.created++
++            this.logger?.info?.(`dsh-messenger-gateway: created topic "${name}" (${threadId}) for ${want.path}`)
++          } catch (err) {
++            summary.errors++
++            this.stats.errors++
++            const detail = `「${want.title}」→ ${err?.message || err}`
++            if (summary.errorDetails.length < 3) summary.errorDetails.push(detail)
++            this.logger?.warn?.(`dsh-messenger-gateway: createForumTopic failed: ${detail}`)
++          }
++          continue
++        }
++
++        // Binding belongs to a different forum (the forum was re-adopted).
++        if (String(rec.chatId) !== String(chatId)) {
++          this.store.remove(workspaceId)
++          continue
++        }
++
++        // Workspace came back -> reopen its topic.
++        if (rec.closed) {
++          try {
++            if (typeof adapter.reopenForumTopic === 'function') {
++              await adapter.reopenForumTopic(chatId, rec.threadId)
++            }
++            this.store.markOpen(workspaceId)
++            summary.reopened++
++            this.stats.reopened++
++            this.logger?.info?.(`dsh-messenger-gateway: reopened topic ${rec.threadId} for ${want.path}`)
++          } catch (err) {
++            if (isTopicGoneError(err)) {
++              this.store.remove(workspaceId)
++              continue
++            }
++            summary.errors++
++            this.stats.errors++
++            this.logger?.warn?.(`dsh-messenger-gateway: reopenForumTopic failed: ${err?.message || err}`)
++          }
++        }
++
++        // Title changed -> rename the topic.
++        if (String(want.title) !== String(rec.title)) {
++          const name = this.uniqueName(want.title, usedNames)
++          try {
++            await adapter.editForumTopic(chatId, rec.threadId, name)
++            this.store.set(workspaceId, { chatId, threadId: rec.threadId, title: name, path: want.path, closed: false })
++            usedNames.add(name)
++            summary.renamed++
++            this.stats.renamed++
++            this.logger?.info?.(`dsh-messenger-gateway: renamed topic ${rec.threadId} to "${name}"`)
++          } catch (err) {
++            if (isTopicGoneError(err)) {
++              this.store.remove(workspaceId)
++              continue
++            }
++            summary.errors++
++            this.stats.errors++
++            this.logger?.warn?.(`dsh-messenger-gateway: editForumTopic failed: ${err?.message || err}`)
++          }
++        } else if (String(want.path) !== String(rec.path)) {
++          this.store.set(workspaceId, { chatId, threadId: rec.threadId, title: rec.title, path: want.path, closed: false })
++        }
++      }
++
++      // Workspaces that no longer exist -> close their topic (never delete it).
++      for (const rec of this.store.all()) {
++        if (wanted.has(rec.workspaceId)) continue
++        if (rec.closed) continue
++        if (this.config.closeOnRemove === false) continue
++        try {
++          await adapter.closeForumTopic(rec.chatId || chatId, rec.threadId)
++          this.store.markClosed(rec.workspaceId)
++          summary.closed++
++          this.stats.closed++
++          this.logger?.info?.(`dsh-messenger-gateway: closed topic ${rec.threadId} — workspace removed: ${rec.path}`)
++        } catch (err) {
++          if (isTopicGoneError(err)) {
++            this.store.remove(rec.workspaceId)
++            continue
++          }
++          summary.errors++
++          this.stats.errors++
++          this.logger?.warn?.(`dsh-messenger-gateway: closeForumTopic failed: ${err?.message || err}`)
++        }
++      }
++
++      summary.ok = true
++      this.stats.lastRun = Date.now()
++    } finally {
++      this.running = false
++    }
++    return summary
++  }
++
++  /** Create one topic, retrying once after Telegram's own flood-control delay. */
++  async createTopic(adapter, chatId, name) {
++    try {
++      const res = await adapter.createForumTopic(chatId, name)
++      return Number(res?.message_thread_id) || 0
++    } catch (err) {
++      const retryAfter = parseRetryAfter(err)
++      if (!retryAfter) throw err
++      this.logger?.warn?.(`dsh-messenger-gateway: Telegram flood control — waiting ${retryAfter}s before retrying topic "${name}"`)
++      await sleep(retryAfter * 1000)
++      const res = await adapter.createForumTopic(chatId, name)
++      return Number(res?.message_thread_id) || 0
++    }
++  }
++
++  /** Diagnostic for /ws probe: create one throwaway topic and report the raw result. */
++  async probe() {
++    const chatId = this.forumChatId()
++    if (!chatId) return { ok: false, error: '尚未認養論壇 — 請先在群組打 /ws sync' }
++    const adapter = this.adapter()
++    if (!adapter?.createForumTopic) return { ok: false, error: 'telegram adapter 不可用' }
++    try {
++      const res = await adapter.createForumTopic(chatId, 'dsh-probe (可刪除)')
++      const raw = JSON.stringify(res)
++      return { ok: true, threadId: Number(res?.message_thread_id) || 0, raw: raw.length > 300 ? `${raw.slice(0, 300)}…` : raw }
++    } catch (err) {
++      return { ok: false, error: String(err?.message || err).slice(0, 300) }
++    }
++  }
++
++  /**
++   * Forget every workspace -> topic binding while keeping the adopted forum.
++   * Needed when the topics were deleted or the group's Topics switch was turned
++   * off: the mirror cannot detect that from the Bot API, so the recorded ids
++   * must be dropped before a fresh /ws sync.
++   */
++  reset() {
++    return this.store.clear()
++  }
++
++  /** Telegram requires unique topic names inside one forum; keep them unique and short. */
++  uniqueName(title, usedNames) {
++    const base = String(title ?? '').trim() || 'workspace'
++    const first = truncateName(base)
++    if (!usedNames.has(first)) return first
++    for (let i = 2; i < 200; i++) {
++      const candidate = truncateName(base, ` (${i})`)
++      if (!usedNames.has(candidate)) return candidate
++    }
++    return truncateName(base, ` (${Date.now() % 100000})`)
++  }
++}
