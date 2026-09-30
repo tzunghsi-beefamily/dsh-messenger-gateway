@@ -89,11 +89,14 @@ Invoke-WebRequest http://127.0.0.1:3080/dsh-messenger-gateway/status  -UseBasicP
 Invoke-WebRequest http://127.0.0.1:3080/dsh-messenger-gateway/config  -UseBasicParsing
 Invoke-WebRequest http://127.0.0.1:3080/dsh-messenger-gateway/smoke -Method POST -UseBasicParsing
 
+# 一鍵健康檢查(檔案 / 語法 / 修正是否還在 / 狀態檔 / 外掛端點 + 離線測試)
+node C:\Users\DavidYeh\Documents\雜七雜八\dsh-messenger-gateway\tools\health-check.mjs
+
 # 離線測試(15 項:建/改名/關閉/重開/幂等/持久化/cwd/General/缺目錄/同名/清除/重建)
-node C:\Users\DavidYeh\Documents\雜七雜八\gw-test\check-workspace-topics.mjs
+node C:\Users\DavidYeh\Documents\雜七雜八\dsh-messenger-gateway\test\check-workspace-topics.mjs
 
 # 讀 DSH session 紀錄(zstd 多 frame,已處理)
-node C:\Users\DavidYeh\Documents\雜七雜八\gw-test\read-session.mjs `
+node C:\Users\DavidYeh\Documents\雜七雜八\dsh-messenger-gateway\tools\read-session.mjs `
   "$env:USERPROFILE\.dsh\sessions\<workspace>\<session>\session.v4.jsonl.zstd" 20
 
 # 關鍵狀態檔
@@ -120,7 +123,7 @@ Telegram 指令:`/ws`、`/ws list`、`/ws sync`、`/ws reset`、`/ws probe`、`/
 ### A. 改完程式碼
 
 1. `node --check lib/*.js`
-2. `node gw-test/check-workspace-topics.mjs`(15/15)
+2. `npm test`(或 `node test\check-workspace-topics.mjs`,應為 15/15)
 3. **重啟 `dsh web`**(Ctrl+C → `npx @deepseek-ai/dsh web`)
 4. 在 Telegram 傳一則測試,檢查 `events.log`
 
@@ -153,7 +156,7 @@ git push                      # 第一次是 git push -u origin main,之後直�
 ### D. 更新 DSH 之後的自我檢查
 
 1. `node --check lib/*.js`(49 個檔案)
-2. `node C:\Users\DavidYeh\Documents\雜七雜八\gw-test\check-workspace-topics.mjs`(應為 **15/15**)
+2. `npm run health`(一鍵:檔案、語法、每項修正是否還在、狀態檔、外掛端點 + 15 項測試)
 3. 在 Telegram 傳一則訊息,確認三件事:
    * 有**正常回覆**(不是 `(no response)`,也不是 `already exists`)
    * `~/.dsh/messenger-gateway/events.log` 沒有出現 `gateway.stopped`(出現 = 設定變更又觸發重建)

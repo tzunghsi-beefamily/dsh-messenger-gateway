@@ -1,12 +1,6 @@
-node_modules/
+﻿node_modules/
+*.log
 .DS_Store
-AGENTS.md
-AGENTS.local.md
-*.tgz
-.env*
-*.pem
-*.key
-credentials.yaml
-index.md
-docs/
-
+Thumbs.db
+test/fixtures/
+test/store-test.json

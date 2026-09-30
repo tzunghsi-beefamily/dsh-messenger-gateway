@@ -1,11 +1,31 @@
 # 📦 @goodandready/dsh-messenger-gateway
 
+> ## 🔱 Independent fork
+>
+> This repository is an **independent fork** of
+> [`GooDAnDReaDY/dsh-messenger-gateway`](https://github.com/GooDAnDReaDY/dsh-messenger-gateway) (MIT),
+> based on release **0.4.9** and developed against **DeepSeek Harness `0.2.0-rc.2`**.
+>
+> * It **does not track upstream** — no merges, and the built-in npm self-updater is **disabled on purpose**:
+>   installing the upstream release would replace this checkout and silently revert every local fix.
+>   Update with `git pull` in the plugin directory.
+> * Added on top of 0.4.9: **workspace topics mirror**, **one durable session per chat/topic**,
+>   **queued turns (every message gets its own reply)**, and six DSH 0.2.0-rc.2 compatibility fixes.
+> * Symptom → cause → fix notes, diagnostics and the maintenance workflow: **[LOCAL-FIXES.md](LOCAL-FIXES.md)**.
+>
+> ```bash
+> git clone https://github.com/tzunghsi-beefamily/dsh-messenger-gateway
+> dsh plugin --profile web add /path/to/dsh-messenger-gateway
+> ```
+>
+> Original plugin and design by [GooDAnDReaDY](https://github.com/GooDAnDReaDY) — MIT licensed, see [LICENSE](LICENSE).
+
 <div align="center">
 
 <h3>Telegram Messenger Bridge with Interactive Buttons, Forum Topics & Voice Notes for DeepSeek Harness</h3>
 
 <p align="center">
-  <a href="https://www.npmjs.com/package/@goodandready/dsh-messenger-gateway"><img src="https://img.shields.io/npm/v/@goodandready/dsh-messenger-gateway.svg?style=for-the-badge&color=6366f1&labelColor=1e1b4b" alt="npm version"></a>
+  <a href="https://github.com/tzunghsi-beefamily/dsh-messenger-gateway"><img src="https://img.shields.io/badge/GitHub-independent_fork-6366f1.svg?style=for-the-badge&labelColor=1e1b4b" alt="independent fork"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-10b981.svg?style=for-the-badge&color=10b981&labelColor=064e3b" alt="license"></a>
   <a href="https://github.com/topics/dsh-plugin"><img src="https://img.shields.io/badge/DSH-Plugin-8b5cf6.svg?style=for-the-badge&labelColor=2e1065" alt="DSH Plugin"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/Node-20%2B-f59e0b.svg?style=for-the-badge&labelColor=451a03" alt="Node version"></a>
@@ -24,9 +44,11 @@
 <table align="center">
   <tr>
     <td align="center">
-      ⭐ <strong>If you like this plugin, please star it on GitHub</strong> — it shows me that the plugin is useful to you and motivates me to keep developing it.
+      🐛 <strong>Found a bug in this fork?</strong> Open an issue on
+      <a href="https://github.com/tzunghsi-beefamily/dsh-messenger-gateway/issues">this repository</a>.
       <br><br>
-      🐛 <strong>If you find a bug or would like to request a feature</strong>, open a GitHub issue in any language — I will review your proposal and implement useful suggestions in a future plugin version.
+      🙏 <strong>Upstream project:</strong> this fork exists because the original plugin is excellent —
+      please also star <a href="https://github.com/GooDAnDReaDY/dsh-messenger-gateway">GooDAnDReaDY/dsh-messenger-gateway</a>.
     </td>
   </tr>
 </table>
@@ -59,7 +81,8 @@ Talk to your Harness agent from Telegram: text, voice, photos, documents, inline
 - Admin alert channel for pairing requests, model errors and monitoring (`/setalert`, `/alert`)
 - Persistent scheduled reminders (`/remind <time> <text>`, `/remind list`, `/remind cancel`)
 - Inbound webhook event dispatcher (`POST /dsh-messenger-gateway/events`) for CI/CD and external alerts
-- Steer: follow-up messages while the agent is busy (instead of aborting)
+- Steer (opt-in): follow-up messages while the agent is busy (instead of aborting). **This fork queues by default**
+  (`telegram.queueWhileBusy`), so every message gets its own turn and its own reply
 - `/stop`, `/new`, `/model`, `/status`, `/voice`, `/sethome`, `/home`
 - Agent tool `messenger_ask` (inline keyboard answers return to the agent)
 - Named homes for outbound notify / `messenger.send`
@@ -68,6 +91,53 @@ Talk to your Harness agent from Telegram: text, voice, photos, documents, inline
 - Optional TTS replies (`dsh-tts`); mp3 is converted to OGG/Opus via `ffmpeg` for Telegram voice notes
 
 Discord and Slack adapters are available as outbound transports (Webhooks or Bot REST APIs).
+
+## 🔱 Fork-only: workspace topics
+
+This fork mirrors the **DSH workspace registry** into Telegram forum topics — one topic per workspace — so a
+message sent in a topic runs in that workspace's directory, and the session it creates shows up under that
+project in the Web GUI (phone → desktop hand-off).
+
+| Command | Description |
+|---------|-------------|
+| `/ws sync` | Create / rename / close topics so they match the registry (1.5 s apart, 429 retried once) |
+| `/ws list` | Show the workspace ↔ topic map |
+| `/ws probe` | Create one throwaway topic and print the raw Bot API result (diagnostics) |
+| `/ws reset` | Forget the workspace ↔ topic map but keep the forum (use after deleting topics, or after turning Topics off) |
+| `/ws` | Describe the workspace bound to the topic you are in |
+
+Setup: use a **supergroup with Topics enabled**, add the bot as an admin with **Manage Topics**, then run
+`/ws sync` once in `General`. Workspaces added later need another `/ws sync` (background reconcile is off by
+default). Config lives in `telegram.workspaceTopics`: `enabled`, `forumChatId`, `closeOnRemove`,
+`autoReconcile` (default `false`), `createDelayMs` (default `1500`).
+
+Each chat/topic keeps **one session** until you send `/new` (binding file
+`~/.dsh/messenger-gateway/chat-sessions.json`). While a turn is running, incoming messages are **queued** and
+answered one by one — set `telegram.queueWhileBusy: false` to get the upstream steer behaviour instead.
+
+## 🩺 Health check & tests
+
+```bash
+npm test        # offline workspace-topics test — 15 checks, no bot, no DSH host needed
+npm run health  # one-command health check — run this after every DSH update
+```
+
+`tools/health-check.mjs` checks the files, the syntax of every `lib/` module, that each local fix is still
+present, the runtime state files (`workspace-topics.json`, `chat-sessions.json`, `events.log`) and the live
+gateway endpoints, then runs the test suite. `tools/read-session.mjs <session.v4.jsonl.zstd>` prints a DSH
+session log (zstd, multi-frame aware).
+
+## 🧯 Troubleshooting
+
+The full symptom → cause → fix table is in **[LOCAL-FIXES.md](LOCAL-FIXES.md)**. The short version:
+
+| Symptom | Likely cause |
+|---------|--------------|
+| Telegram says `(no response)` although the GUI shows an answer | the reply was collected after the turn ended, or the gateway was rebuilt mid-turn (look for `gateway.stopped` in `events.log`) |
+| `Internal error: session "…" already exists` | a persisted session was passed to `agents.create()` instead of `agents.resume()` |
+| Every message opens a new session | the chat → session binding file is missing or was cleared |
+| Settings card saves nothing / token disappears | a config section lost its `.volatile()` marker (DSH 0.2.0-rc.2 only persists volatile fields) |
+| Duplicate topic names | `/ws sync` was run again after a partial failure — `/ws reset` then one `/ws sync` |
 
 ## Install
 
@@ -107,6 +177,7 @@ Spoken replies use Telegram `sendVoice`. If TTS returns MP3 (or other non-Opus a
 | `/status` | Gateway status and session counters |
 | `/top` | Live server resources: RSS/Heap memory, uptime, active chats, reminders |
 | `/topic <name>` | Create a new Telegram forum topic in supergroups and start an isolated session |
+| `/ws [list\|sync\|reset\|probe]` | Workspace ↔ forum-topic mirror (**fork feature**, see above) |
 | `/role [name]` | Switch agent persona (`coder`, `architect`, `reviewer`, `writer`, `translator`, `concise`) |
 | `/skills` `/tools` | List active agent tools and capabilities |
 | `/fork` | Fork current session into a new independent session |
@@ -137,6 +208,10 @@ In addition to Telegram, outbound messages can be dispatched to Discord and Slac
 ## Configuration notes
 
 - `sessionScope`: `user` (default) or `chat` — how group chats isolate sessions
+- `telegram.workspaceTopics`: workspace → forum topic mirror (**fork feature**, see above)
+- `telegram.queueWhileBusy`: `true` (default) — queue messages while a turn runs so each gets its own reply
+- `telegram.debugEvents`: `true` (default) — append session events to `~/.dsh/messenger-gateway/events.log` (bounded to 200 lines)
+- The built-in npm **self-updater is disabled in this fork** — `/update` and the settings card both say so; use `git pull`
 - `voiceMode`: `mirror` / `always` / `off` — when to speak replies (also `/voice`)
 - `tts.enabled` / `tts.maxChars` — TTS gate and length cap
 - `notifyBridge` — forward non-messenger web session events to a home

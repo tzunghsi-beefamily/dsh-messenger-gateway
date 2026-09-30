@@ -1,7 +1,7 @@
 {
   "name": "@goodandready/dsh-messenger-gateway",
-  "version": "0.4.9",
-  "description": "Telegram messenger bridge for DeepSeek Harness: sessions, steer, homes, inline asks, notify bridge, and optional TTS voice notes.",
+  "version": "0.5.0",
+  "description": "Telegram messenger bridge for DeepSeek Harness (independent fork of @goodandready/dsh-messenger-gateway 0.4.9): workspace-registry forum topics, one durable session per chat/topic, queued turns, plus DSH 0.2.0-rc.2 compatibility fixes.",
   "license": "MIT",
   "type": "module",
   "main": "./lib/index.js",
@@ -15,8 +15,11 @@
     "lib/",
     "cordis.patch.yml",
     "README.md",
-    "README.ru.md",
     "README.zh.md",
+    "README.ru.md",
+    "LOCAL-FIXES.md",
+    "test/",
+    "tools/",
     "LICENSE"
   ],
   "keywords": [
@@ -25,18 +28,18 @@
     "telegram",
     "messenger",
     "deepseek-harness",
-    "bot"
+    "bot",
+    "workspace",
+    "forum-topics"
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/GooDAnDReaDY/dsh-messenger-gateway.git"
+    "url": "git+https://github.com/tzunghsi-beefamily/dsh-messenger-gateway.git"
   },
-  "homepage": "https://github.com/GooDAnDReaDY/dsh-messenger-gateway#readme",
+  "homepage": "https://github.com/tzunghsi-beefamily/dsh-messenger-gateway#readme",
   "scripts": {
-    "test": "node --test test/*.test.mjs",
-    "test:load": "node scripts/verify-dsh-load.mjs",
-    "test:all": "npm test && npm run test:load",
-    "smoke:http": "node scripts/smoke-http.mjs"
+    "test": "node test/check-workspace-topics.mjs",
+    "health": "node tools/health-check.mjs"
   },
   "dsh": {
     "bundle": {
@@ -66,6 +69,6 @@
     "access": "public"
   },
   "bugs": {
-    "url": "https://github.com/GooDAnDReaDY/dsh-messenger-gateway/issues"
+    "url": "https://github.com/tzunghsi-beefamily/dsh-messenger-gateway/issues"
   }
 }
