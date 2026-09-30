@@ -5,7 +5,7 @@
  *   node test/check-session-binding.mjs
  */
 import assert from 'node:assert/strict'
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { zstdCompressSync } from 'node:zlib'
@@ -113,6 +113,21 @@ const scopedList = filterByCwd(
 ok('filterByCwd 只留同工作區', scopedList.length === 2 && scopedList.every((s) => s.id !== 'z'))
 ok('沒有 cwd 時回傳全部', filterByCwd([{ id: 'x' }], undefined).length === 1)
 ok('baseName 取最後一段', baseName('C:\\Users\\Me\\雜七雜八') === '雜七雜八')
+
+/* last activity follows the log file, not the directory ------------------- */
+const aaaDir = join(fakeHome, 'sessions', '--slug--', 'msgw-aaa')
+const aaaLog = join(aaaDir, 'session.v4.jsonl.zstd')
+const oldTime = new Date('2020-01-01T00:00:00Z')
+const newTime = new Date('2024-06-01T12:00:00Z')
+utimesSync(aaaDir, oldTime, oldTime)
+utimesSync(aaaLog, newTime, newTime)
+const fresh = listStoredSessions({ home: fakeHome, includeSubagents: true })
+ok('lastActivity 取 log 檔時間(資料夾時間較舊)', Math.abs(fresh.find((s) => s.id === 'msgw-aaa').lastActivity - newTime.getTime()) < 5000)
+const subDir = join(fakeHome, 'sessions', '--slug--', 'sub-ccc')
+utimesSync(subDir, oldTime, oldTime)
+for (const entry of readdirSync(subDir)) utimesSync(join(subDir, entry), oldTime, oldTime)
+const ordered = listStoredSessions({ home: fakeHome, includeSubagents: true })
+ok('檔案較新的排在較舊的前面', ordered.findIndex((s) => s.id === 'msgw-aaa') < ordered.findIndex((s) => s.id === 'sub-ccc'))
 
 rmSync(tmp, { recursive: true, force: true })
 console.log(`\n${pass} 項通過${process.exitCode ? '(有失敗)' : ''}`)
