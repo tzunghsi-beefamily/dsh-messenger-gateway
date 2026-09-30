@@ -129,10 +129,24 @@ graph LR
 
 `/status` 會顯示 `mode: default` 或 `mode: attached → <session id>`。綁定檔格式是
 `{"defaultSessionId": "msgw-…", "attachedSessionId": "session-…"}`(舊版只存一個 id 的檔案會自動遷移)。
-
 **子 agent 的 session 預設會被隱藏。** agent 開子 agent 時,那些 session 也會被存下來(`delegationDepth > 0`),
 但它們只是上層 session 的活動,所以 `/sessions`、`npm run sessions`、`/attach` 預設都會跳過;要看請用
 `/sessions all`(或 `--all`),而 `/attach` 會拒絕接續子 agent 的 session。
+
+### 🗑️ 刪除 session
+
+DSH 本身**只有封存**:GUI 提供 archive/unarchive(`delete` 只給工作區),而 JSONL 持久化後端沒有任何清除功能。
+session 就是磁碟上的一個資料夾,所以本 fork 提供安全工具:
+
+```bash
+npm run session:delete -- --id 48c35e00 --dry-run      # 先看會做什麼(不動檔案)
+npm run session:delete -- --id 48c35e00                # 移到 ~/.dsh/session-trash(可還原)
+npm run session:delete -- --id 48c35e00 --purge --yes  # 永久刪除
+```
+
+它會一起處理 `~/.dsh/sessions/<工作區slug>/<id>/` 與投影快取檔;若 DSH 正在執行、或 Telegram 還綁著該 session,
+會先警告;查詢符合多筆時會要求更精確的 id 前幾碼。`workspace.json` 裡殘留的 id 無害 —— registry 會濾掉找不到路徑的
+id,所以 GUI 清單也會一起消失(若沒立刻更新,重啟 DSH 即可)。
 
 ## 🩺 健康檢查與測試
 

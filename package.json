@@ -40,7 +40,8 @@
   "scripts": {
     "test": "node test/check-workspace-topics.mjs && node test/check-session-binding.mjs",
     "health": "node tools/health-check.mjs",
-    "sessions": "node tools/list-sessions.mjs"
+    "sessions": "node tools/list-sessions.mjs",
+    "session:delete": "node tools/delete-session.mjs"
   },
   "dsh": {
     "bundle": {

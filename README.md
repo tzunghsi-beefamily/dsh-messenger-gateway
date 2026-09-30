@@ -165,6 +165,23 @@ node tools/list-sessions.mjs --json               # machine readable
 On disk the session id is simply the session directory name:
 `~/.dsh/sessions/<workspace-slug>/<session-id>/`.
 
+### 🗑️ Deleting a session
+
+DSH itself only **archives** sessions: the Web GUI exposes archive/unarchive (`delete` exists for workspaces
+only) and the JSONL persistence backend has no purge. A session is just a directory, so this fork ships a safe
+tool for it:
+
+```bash
+npm run session:delete -- --id 48c35e00 --dry-run        # show what would happen
+npm run session:delete -- --id 48c35e00                  # move to ~/.dsh/session-trash (restorable)
+npm run session:delete -- --id 48c35e00 --purge --yes    # delete permanently
+```
+
+It moves `~/.dsh/sessions/<workspace-slug>/<id>/` together with the projection-cache file, warns when DSH is
+running or when Telegram is still bound to that session, and refuses ambiguous matches (pass a longer id
+prefix). The stale id left in `workspace.json` is harmless — the registry filters ids whose session path no
+longer exists, so the session also disappears from the GUI.
+
 ## 🧯 Troubleshooting
 
 The full symptom → cause → fix table is in **[LOCAL-FIXES.md](LOCAL-FIXES.md)**. The short version:

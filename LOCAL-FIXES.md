@@ -100,6 +100,11 @@ node C:\Users\DavidYeh\Documents\雜七雜八\dsh-messenger-gateway\tools\list-s
 #   --telegram 只列 Telegram 的 / --id <前幾碼> 看單一條 / --json 給程式用
 #   Telegram 內用 /status 可看「目前所在話題」的 session id
 
+# 刪除 session(DSH 只有封存功能;預設移到 ~/.dsh/session-trash 可還原)
+node C:\Users\DavidYeh\Documents\雜七雜八\dsh-messenger-gateway\tools\delete-session.mjs --id <id 前幾碼> --dry-run
+#   --yes 才會真的執行;--purge 才是永久刪除
+#   注意:DSH 正在執行時它會警告;建議先關掉 DSH(或確認該 session 沒在用)
+
 # 讀 DSH session 紀錄(zstd 多 frame,已處理)
 node C:\Users\DavidYeh\Documents\雜七雜八\dsh-messenger-gateway\tools\read-session.mjs `
   "$env:USERPROFILE\.dsh\sessions\<workspace>\<session>\session.v4.jsonl.zstd" 20
