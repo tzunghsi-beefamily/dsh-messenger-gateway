@@ -148,7 +148,7 @@ try {
 }
 
 /* 7. offline test suite (inherits stdio so you can see its table) --------- */
-const testFiles = ['test/check-workspace-topics.mjs', 'test/check-session-binding.mjs']
+const testFiles = ['test/check-workspace-topics.mjs', 'test/check-session-binding.mjs', 'test/check-telegram-format.mjs']
   .map((rel) => join(root, rel))
   .filter((file) => existsSync(file))
 let testCode = 0

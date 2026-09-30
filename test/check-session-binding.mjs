@@ -96,6 +96,7 @@ ok('includeSubagents 會列出子 agent', withAll.length === 3 && withAll.find((
 ok('子 agent 的 depth 是 1', withAll.find((s) => s.id === 'sub-ccc').depth === 1)
 ok('上層 session 的 depth 是 0', withAll.find((s) => s.id === 'session-bbb').depth === 0 && withAll.find((s) => s.id === 'session-bbb').subagent === false)
 ok('可用 id 前幾碼找到', findStoredSession('msgw-a', { home: fakeHome })?.id === 'msgw-aaa')
+ok('可用去掉 session- 後的前幾碼找到', findStoredSession('bbb', { home: fakeHome })?.id === 'session-bbb')
 ok('可用標題片段找到(不分大小寫)', findStoredSession('gui 任務', { home: fakeHome })?.id === 'session-bbb')
 ok('找不到時回 undefined', findStoredSession('nope-nope', { home: fakeHome }) === undefined)
 ok('預設找不到子 agent', findStoredSession('sub-ccc', { home: fakeHome }) === undefined)
