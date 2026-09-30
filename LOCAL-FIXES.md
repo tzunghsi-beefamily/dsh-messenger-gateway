@@ -1,8 +1,9 @@
-# dsh-messenger-gateway 本機 fork 維護手冊
+# DSH Telegram Gateway(獨立 fork)維護手冊
 
-> 對象:這台機器上的 **`C:\Users\DavidYeh\Documents\雜七雜八\dsh-messenger-gateway`**
-> 基礎版本:上游 `@goodandready/dsh-messenger-gateway@0.4.9`(MIT)
-> 上游來源:<https://github.com/GooDAnDReaDY/dsh-messenger-gateway>
+> 專案位置:**`C:\Users\DavidYeh\Documents\雜七雜八\dsh-messenger-gateway`**
+> GitHub:<https://github.com/tzunghsi-beefamily/dsh-messenger-gateway>
+> **本專案已與上游斷開(2026-09-30 起獨立維護,不追蹤上游更新)**
+> 起源:`@goodandready/dsh-messenger-gateway@0.4.9`(MIT)
 > 執行環境:DSH `0.2.0-rc.2` / Node 24 / Windows
 > 最後更新:2026-09-30
 
@@ -123,24 +124,46 @@ Telegram 指令:`/ws`、`/ws list`、`/ws sync`、`/ws reset`、`/ws probe`、`/
 3. **重啟 `dsh web`**(Ctrl+C → `npx @deepseek-ai/dsh web`)
 4. 在 Telegram 傳一則測試,檢查 `events.log`
 
-### B. 上游釋出新版時(重要)
+### B. 這個專案已獨立(刻意不追蹤上游)
 
-**不要**用 `dsh plugin update` —— 會蓋掉這個 fork。流程是:
+自 2026-09-30 起本專案**與上游斷開**:`upstream` remote 已移除,**不要**合併上游,也**不要**用 `dsh plugin update`
+(兩者都會覆蓋掉本專案的修正)。`patches/local-fixes-vs-0.4.9.patch` 只保留作歷史參考,不用於同步。
+
+真正需要留意的是 **DSH 本身的更新** —— 它可能讓 §3 的契約失效(`.volatile()`、`session/event` 簽名、
+`agents.resume`、`turn/end`、`attachSession`、patch 分層)。DSH 更新後請照 §5.D 自我檢查。
+
+### C. 版本控制(GitHub)
 
 ```powershell
-# 1) 抓上游新版原始碼到暫存目錄
-npm install --prefix <tmp> @goodandready/dsh-messenger-gateway@<新版> --cache <workspace>\.npm-cache
-# 2) 與本 fork 比對(排除 node_modules)
-#    套用 patches/local-fixes-vs-0.4.9.patch,逐項解決衝突
+cd C:\Users\DavidYeh\Documents\雜七雜八\dsh-messenger-gateway
+git add -A
+git commit -m "修正: ..."
+git push                      # 第一次是 git push -u origin main,之後直接 git push
 ```
 
-`patches/local-fixes-vs-0.4.9.patch` 是「本 fork 相對上游 0.4.9 的完整差異」,新版本可用它快速移植。
-移植後務必重跑 §4 的驗證。
+> 這個 repo 的本機設定(**換電腦或重新 clone 要重設**):
+> ```powershell
+> git config http.sslBackend openssl     # 這台機器的 schannel 壞掉,不改會出現
+>                                        # schannel: AcquireCredentialsHandle failed: SEC_E_NO_CREDENTIALS
+> git config credential.helper manager   # 推送時由 GCM 彈出瀏覽器登入
+> ```
+> ⚠️ DSH 沙盒內**無法** push(git 的憑證流程需要 `sh`,沙盒禁止具名管道 →
+> `sh.exe: fatal error - couldn't create signal pipe`)。**push 要在自己的終端機執行。**
 
-### C. 禁忌
+### D. 更新 DSH 之後的自我檢查
+
+1. `node --check lib/*.js`(49 個檔案)
+2. `node C:\Users\DavidYeh\Documents\雜七雜八\gw-test\check-workspace-topics.mjs`(應為 **15/15**)
+3. 在 Telegram 傳一則訊息,確認三件事:
+   * 有**正常回覆**(不是 `(no response)`,也不是 `already exists`)
+   * `~/.dsh/messenger-gateway/events.log` 沒有出現 `gateway.stopped`(出現 = 設定變更又觸發重建)
+   * GUI **沒有多出新的 session**(同一話題應沿用同一個)
+4. 若壞掉,對照 §2 的七個根因逐項排查;新症狀請補進 §2(下次就查得快)
+
+### E. 禁忌
 
 * ❌ 不要改 DSH 本體或 `~/.dsh` 的設定檔來繞問題(重啟就壞) —— 修正一律放這個外掛。
-* ❌ 不要 `dsh plugin update`。
+* ❌ 不要 `dsh plugin update`,也不要合併上游。
 * ⚠️ `profiles/web/node_modules/@goodandready/` 是 Junction,**不要刪**(刪了外掛消失)。
 
 ---
