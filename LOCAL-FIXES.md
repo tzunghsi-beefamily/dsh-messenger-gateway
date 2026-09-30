@@ -95,6 +95,11 @@ node C:\Users\DavidYeh\Documents\雜七雜八\dsh-messenger-gateway\tools\health
 # 離線測試(15 項:建/改名/關閉/重開/幂等/持久化/cwd/General/缺目錄/同名/清除/重建)
 node C:\Users\DavidYeh\Documents\雜七雜八\dsh-messenger-gateway\test\check-workspace-topics.mjs
 
+# 列出所有 session(含 id / 標題 / 專案 / 來源)—— GUI 只顯示標題,用這個對照
+node C:\Users\DavidYeh\Documents\雜七雜八\dsh-messenger-gateway\tools\list-sessions.mjs
+#   --telegram 只列 Telegram 的 / --id <前幾碼> 看單一條 / --json 給程式用
+#   Telegram 內用 /status 可看「目前所在話題」的 session id
+
 # 讀 DSH session 紀錄(zstd 多 frame,已處理)
 node C:\Users\DavidYeh\Documents\雜七雜八\dsh-messenger-gateway\tools\read-session.mjs `
   "$env:USERPROFILE\.dsh\sessions\<workspace>\<session>\session.v4.jsonl.zstd" 20

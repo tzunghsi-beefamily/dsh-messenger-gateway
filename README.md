@@ -127,6 +127,23 @@ present, the runtime state files (`workspace-topics.json`, `chat-sessions.json`,
 gateway endpoints, then runs the test suite. `tools/read-session.mjs <session.v4.jsonl.zstd>` prints a DSH
 session log (zstd, multi-frame aware).
 
+### 🔎 How to find a session id
+
+The Web GUI shows session **titles**, not ids. Two ways to get the id:
+
+* **In Telegram:** `/status` prints the session id of the topic you are in, plus the bound session and workspace.
+* **Anywhere:**
+
+```bash
+npm run sessions                                  # every DSH session: id, title, project, last activity
+node tools/list-sessions.mjs --telegram           # only messenger sessions (msgw-…)
+node tools/list-sessions.mjs --id msgw-6d972543   # details for one session
+node tools/list-sessions.mjs --json               # machine readable
+```
+
+On disk the session id is simply the session directory name:
+`~/.dsh/sessions/<workspace-slug>/<session-id>/`.
+
 ## 🧯 Troubleshooting
 
 The full symptom → cause → fix table is in **[LOCAL-FIXES.md](LOCAL-FIXES.md)**. The short version:
