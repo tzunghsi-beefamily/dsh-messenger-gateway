@@ -123,6 +123,8 @@ Telegram 指令:`/ws`、`/ws list`、`/ws sync`、`/ws reset`、`/ws probe`、`/
 * `/sessions [n]` 列出最近 session(含 id、標題、來源);`/attach <編號|id 前幾碼|標題片段>` 接續既有 session
 * **`/sessions` 以話題所屬工作區為範圍**(不會混到別的專案);`/sessions all` 跨工作區、`/sessions sub` 含子 agent
 * **子 agent 的 session 預設隱藏**(`delegationDepth > 0`);`/attach` 會拒絕接續它們
+* **General(未綁定工作區)是一般對話**:用 `agent.generalCwd`(預設 `C:\Users\DavidYeh\Documents\Telegram`),
+  不是主機啟動目錄;GUI 顯示為「未歸屬」,檔案沙盒只涵蓋該資料夾(避免家目錄一直要權限)
 * `/detach`(或 `/back`)退回 default;`/new` 連 default 一起清掉(下一則建立全新的)
 * 接續時**不會**覆蓋 default,也不會把該 session 掛到話題的工作區(它本來就在自己的專案裡)
 * `/status` 可看目前是 `default` 還是 `attached → <id>`

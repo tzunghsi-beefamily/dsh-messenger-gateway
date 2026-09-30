@@ -131,6 +131,9 @@ graph LR
 `{"defaultSessionId": "msgw-…", "attachedSessionId": "session-…"}`(舊版只存一個 id 的檔案會自動遷移)。
 **`/sessions` 以工作區為範圍**:在「雜七雜八」話題只會列出該工作區的 session,不會混到別的專案;
 要跨工作區看用 `/sessions all`。
+**General 是一般對話,不屬於任何工作區**:沒有工作區綁定的聊天會使用自己的目錄
+(`agent.generalCwd`,預設 `C:\Users\DavidYeh\Documents\Telegram`),不是主機的啟動目錄 —— 這樣檔案沙盒範圍小
+(不會因為工作區是家目錄而一直跟你要權限),在 GUI 也顯示為「未歸屬」;它跟其他聊天一樣有自己的預設 session。
 **子 agent 的 session 預設會被隱藏。** agent 開子 agent 時,那些 session 也會被存下來(`delegationDepth > 0`),
 但它們只是上層 session 的活動,所以 `/sessions`、`npm run sessions`、`/attach` 預設都會跳過;要看請用
 `/sessions sub`(或 `--all`),而 `/attach` 會拒絕接續子 agent 的 session。

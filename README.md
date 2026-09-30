@@ -136,6 +136,11 @@ automatically).
 that ran in that directory, so conversations from other projects never mix in; use `/sessions all` to look across
 workspaces. `/attach <id>` can still reach a session from another workspace when you pass its id explicitly.
 
+**General is a normal conversation, not a workspace.** A chat without a workspace binding runs in its own
+directory (`agent.generalCwd`, default `C:\Users\DavidYeh\Documents\Telegram`) instead of the host's process cwd,
+so the file sandbox stays narrow (no approval prompts caused by a home-directory workspace) and the session appears
+ungrouped in the Web GUI. It keeps its own default session like any other chat.
+
 **Subagent sessions are hidden.** When an agent spawns subagents, their sessions are stored too
 (`delegationDepth > 0`) but they are activity of a parent session, so `/sessions`, `npm run sessions` and
 `/attach` skip them. `/sessions sub` (or `--all`) shows them; `/attach` refuses to continue one.
