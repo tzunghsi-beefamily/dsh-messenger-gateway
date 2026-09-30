@@ -81,6 +81,7 @@ const fixChecks = [
   ['session 歸屬專案(attachSession)', 'lib/gateway.js', /attachSessionToWorkspace/],
   ['持久化話題→session', 'lib/workspace-store.js', /createChatSessionStore/],
   ['預設 + 接續 session 綁定', 'lib/workspace-store.js', /attachedSessionId/],
+  ['Telegram session 掛上 agent preset(工具集)', 'lib/gateway.js', /presets\.mount/],
   ['session 索引(/sessions /attach)', 'lib/session-index.js', /listStoredSessions/],
   ['話題節流 + 429 重試', 'lib/workspace-topics.js', /parseRetryAfter/],
   ['話題→session 綁定', 'lib/workspace-store.js', /createWorkspaceTopicsStore/],
