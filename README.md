@@ -123,7 +123,7 @@ and keep working on it from Telegram:
 
 | Command | What it does |
 |---------|--------------|
-| `/sessions [n] [all]` | List the n most recent sessions with their ids (Telegram and GUI ones) |
+| `/sessions [n] [all] [sub]` | Sessions of **this topic's workspace** with their ids (`all` = every workspace, `sub` = include subagents) |
 | `/attach <n\|id\|title>` | Continue that session here; this chat's default session is remembered |
 | `/detach` (aliases `/back`, `/default`) | Leave the attached session and go back to the default one |
 | `/new` | Forget both: the next message starts a brand-new default session |
@@ -132,9 +132,13 @@ and keep working on it from Telegram:
 `{"defaultSessionId": "msgw-…", "attachedSessionId": "session-…"}` (v1 files that stored a bare id are migrated
 automatically).
 
+**`/sessions` is scoped to the workspace.** In a topic bound to a workspace (say `雜七雜八`) it only lists sessions
+that ran in that directory, so conversations from other projects never mix in; use `/sessions all` to look across
+workspaces. `/attach <id>` can still reach a session from another workspace when you pass its id explicitly.
+
 **Subagent sessions are hidden.** When an agent spawns subagents, their sessions are stored too
 (`delegationDepth > 0`) but they are activity of a parent session, so `/sessions`, `npm run sessions` and
-`/attach` skip them. `/sessions all` (or `--all`) shows them; `/attach` refuses to continue one.
+`/attach` skip them. `/sessions sub` (or `--all`) shows them; `/attach` refuses to continue one.
 
 ## 🩺 Health check & tests
 

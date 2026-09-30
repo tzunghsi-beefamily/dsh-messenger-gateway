@@ -10,7 +10,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { zstdCompressSync } from 'node:zlib'
 import { createChatSessionStore } from '../lib/workspace-store.js'
-import { findStoredSession, listStoredSessions } from '../lib/session-index.js'
+import { baseName, filterByCwd, findStoredSession, listStoredSessions, samePath } from '../lib/session-index.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const tmp = join(here, 'fixtures-binding')
@@ -101,6 +101,18 @@ ok('可用標題片段找到(不分大小寫)', findStoredSession('gui 任務', 
 ok('找不到時回 undefined', findStoredSession('nope-nope', { home: fakeHome }) === undefined)
 ok('預設找不到子 agent', findStoredSession('sub-ccc', { home: fakeHome }) === undefined)
 ok('明確要求才找得到子 agent', findStoredSession('sub-ccc', { home: fakeHome, includeSubagents: true })?.id === 'sub-ccc')
+
+/* workspace scoping: /sessions only shows the topic's own workspace --------- */
+ok('同樣路徑(大小寫/斜線/結尾)相等', samePath('C:\\Users\\Me\\WS', 'c:/users/me/ws/'))
+ok('不同路徑不相等', !samePath('C:\\a', 'C:\\b'))
+ok('空值不相等', !samePath('', 'C:\\a'))
+const scopedList = filterByCwd(
+  [{ id: 'x', cwd: 'C:\\ws' }, { id: 'y', cwd: 'C:/WS/' }, { id: 'z', cwd: 'C:\\other' }],
+  'c:\\ws',
+)
+ok('filterByCwd 只留同工作區', scopedList.length === 2 && scopedList.every((s) => s.id !== 'z'))
+ok('沒有 cwd 時回傳全部', filterByCwd([{ id: 'x' }], undefined).length === 1)
+ok('baseName 取最後一段', baseName('C:\\Users\\Me\\雜七雜八') === '雜七雜八')
 
 rmSync(tmp, { recursive: true, force: true })
 console.log(`\n${pass} 項通過${process.exitCode ? '(有失敗)' : ''}`)

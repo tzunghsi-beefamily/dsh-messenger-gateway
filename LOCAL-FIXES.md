@@ -121,7 +121,8 @@ Telegram 指令:`/ws`、`/ws list`、`/ws sync`、`/ws reset`、`/ws probe`、`/
 
 * 每個聊天/話題有自己的 **default session**(第一則訊息建立,重啟後接續)
 * `/sessions [n]` 列出最近 session(含 id、標題、來源);`/attach <編號|id 前幾碼|標題片段>` 接續既有 session
-* **子 agent 的 session 預設隱藏**(`delegationDepth > 0`);`/sessions all` 才顯示,`/attach` 會拒絕接續它們
+* **`/sessions` 以話題所屬工作區為範圍**(不會混到別的專案);`/sessions all` 跨工作區、`/sessions sub` 含子 agent
+* **子 agent 的 session 預設隱藏**(`delegationDepth > 0`);`/attach` 會拒絕接續它們
 * `/detach`(或 `/back`)退回 default;`/new` 連 default 一起清掉(下一則建立全新的)
 * 接續時**不會**覆蓋 default,也不會把該 session 掛到話題的工作區(它本來就在自己的專案裡)
 * `/status` 可看目前是 `default` 還是 `attached → <id>`
